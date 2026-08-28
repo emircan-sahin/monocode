@@ -105,7 +105,7 @@ export type Block = {
   };
   approval?: {
     requestId: number;
-    decided?: "allow" | "deny";
+    decided?: "allow" | "deny" | "cancelled";
   };
   handoff?: HandoffMeta;
 };

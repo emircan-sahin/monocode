@@ -117,7 +117,9 @@ import { loadTabGroupLabels, resolveTabGroupLabel } from "../lib/tabGroups";
 import {
   filterKeybindings,
   KEYBINDINGS,
+  loadClaudeHooks,
   loadComposerRunner,
+  saveClaudeHooks,
   saveComposerRunner,
   settingsSectionDescription,
   settingsSectionLabel,
@@ -250,6 +252,7 @@ function GeneralPage() {
   );
   const [transcriptZen, setTranscriptZen] = useState(loadTranscriptZen);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
+  const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
 
   useEffect(() => {
     const onChange = (event: Event) => {
@@ -278,6 +281,11 @@ function GeneralPage() {
   const onComposerRunner = (next: boolean) => {
     saveComposerRunner(next);
     setComposerRunner(next);
+  };
+
+  const onClaudeHooks = (next: boolean) => {
+    saveClaudeHooks(next);
+    setClaudeHooks(next);
   };
 
   return (
@@ -328,6 +336,16 @@ function GeneralPage() {
           label="Composer mascot"
           on={composerRunner}
           onChange={onComposerRunner}
+        />
+      </Row>
+      <Row
+        label="Claude Code hooks"
+        description="Run the hooks configured in your settings.json files — PreToolUse command rewrites, blocks, notifications, and the rest — just as the Claude Code CLI would. Turn this off if a hook is misbehaving and you need the session back. Takes effect on the next turn."
+      >
+        <Toggle
+          label="Claude Code hooks"
+          on={claudeHooks}
+          onChange={onClaudeHooks}
         />
       </Row>
 
