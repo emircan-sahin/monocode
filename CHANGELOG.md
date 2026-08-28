@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The model you pick in the composer now carries to new sessions. Previously only the Providers settings page wrote the default, so a session started from the built-in default no matter what you had switched to while working. Reported in #30.
 - Unused provider CLIs no longer start at launch. Catalog probes run only for harnesses in the restored workspace, or when you open that provider in the model picker. Pi/omp probes skip extensions so a leftover `pi` process cannot sit at ~1GB while you work in Codex or Claude. Diagnosed in #19.
 
 ## [0.1.16] - 2026-08-28
