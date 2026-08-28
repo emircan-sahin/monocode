@@ -4,6 +4,7 @@ import {
   errorRateLimits,
   parseClaudeOAuthUsage,
   parseCodexRateLimits,
+  throttledRateLimits,
   unavailableRateLimits,
   type ProviderRateLimits,
 } from "./rateLimits";
@@ -45,6 +46,7 @@ export async function fetchClaudeRateLimits(): Promise<ProviderRateLimits> {
         result.error?.trim() || "Claude not signed in",
       );
     }
+    if (result.httpStatus === 429) return throttledRateLimits("claude");
     return errorRateLimits(
       "claude",
       result.error?.trim() || "Claude usage unavailable",

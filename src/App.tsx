@@ -152,6 +152,7 @@ import {
 } from "./lib/checkpoint";
 import { notifyDirsChanged } from "./lib/fileTree";
 import { nudgeWatchedFiles } from "./lib/fileWatch";
+import { notifyUsageStale, usageProviderFor } from "./lib/rateLimits";
 import { type EditorNavigationTarget, type OpenFileFn } from "./lib/search";
 import {
   mergeModelSettings,
@@ -3072,6 +3073,7 @@ export default function App({
           );
           notifyReviewChanged(sessionId);
           notifyGitChanged();
+          notifyUsageStale(usageProviderFor(current.harness));
           nudgeWorkspace(workCwd);
           nudgeWatchedFiles();
           window.setTimeout(() => nudgeWatchedFiles(), 150);
@@ -3134,6 +3136,7 @@ export default function App({
           .then(() => notifyReviewChanged(sessionId));
         nudgeWorkspace(sessionWorkCwd(session));
         notifyGitChanged();
+        notifyUsageStale(usageProviderFor(session.harness));
         nudgeWatchedFiles();
         window.setTimeout(() => nudgeWatchedFiles(), 150);
       } else {

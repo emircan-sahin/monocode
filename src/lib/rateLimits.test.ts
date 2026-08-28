@@ -12,10 +12,16 @@ import {
   parseClaudeOAuthUsage,
   parseCodexRateLimits,
   parseResetTimestamp,
+  CODEX_MIN_REFETCH_MS,
+  RATE_LIMIT_BACKOFF_MS,
   RATE_LIMIT_MIN_REFETCH_MS,
+  RATE_LIMIT_UNAVAILABLE_RETRY_MS,
   rateLimitWindowTooltip,
   shouldFetchProvider,
   shouldFetchRateLimits,
+  throttledRateLimits,
+  TURN_MIN_REFETCH_MS,
+  usageProviderFor,
 } from "./rateLimits";
 
 describe("formatWindowLabel", () => {
@@ -201,12 +207,12 @@ describe("shouldFetchRateLimits", () => {
   const fresh = {
     ...idleRateLimits("claude"),
     status: "ok" as const,
-    updatedAt: now - 60_000,
+    updatedAt: now - 10_000,
   };
   const stale = {
     ...fresh,
     provider: "codex" as const,
-    updatedAt: now - RATE_LIMIT_MIN_REFETCH_MS,
+    updatedAt: now - CODEX_MIN_REFETCH_MS,
   };
 
   it("always fetches when forced", () => {
@@ -243,32 +249,74 @@ describe("shouldFetchRateLimits", () => {
     ).toBe(false);
   });
 
-  it("fetches on focus once either snapshot is 5 minutes old", () => {
+  it("holds both providers to the five-minute floor", () => {
+    const claude = { ...fresh, updatedAt: now - RATE_LIMIT_MIN_REFETCH_MS };
+    const justUnder = { ...fresh, updatedAt: now - RATE_LIMIT_MIN_REFETCH_MS + 1 };
+    expect(shouldFetchProvider(claude, { visible: true, now })).toBe(true);
+    expect(shouldFetchProvider(justUnder, { visible: true, now })).toBe(false);
+    expect(shouldFetchProvider(stale, { visible: true, now })).toBe(true);
+  });
+
+  it("keeps a throttled provider off the endpoint until the backoff clears", () => {
+    const hit = { ...throttledRateLimits("claude"), updatedAt: now };
+    // Even a turn ending must not cut ahead of a 429.
     expect(
-      shouldFetchRateLimits({
+      shouldFetchProvider(hit, {
         visible: true,
-        claude: fresh,
-        codex: stale,
         now,
+        minAgeMs: TURN_MIN_REFETCH_MS,
+      }),
+    ).toBe(false);
+    expect(
+      shouldFetchProvider(
+        { ...hit, updatedAt: now - RATE_LIMIT_MIN_REFETCH_MS },
+        { visible: true, now },
+      ),
+    ).toBe(false);
+    expect(
+      shouldFetchProvider(
+        { ...hit, updatedAt: now - RATE_LIMIT_BACKOFF_MS },
+        { visible: true, now },
+      ),
+    ).toBe(true);
+  });
+
+  it("drops to the turn floor when a turn just ended", () => {
+    const codex = {
+      ...fresh,
+      provider: "codex" as const,
+      updatedAt: now - TURN_MIN_REFETCH_MS,
+    };
+    expect(
+      shouldFetchProvider(codex, {
+        visible: true,
+        now,
+        minAgeMs: TURN_MIN_REFETCH_MS,
       }),
     ).toBe(true);
+    expect(
+      shouldFetchProvider(
+        { ...codex, updatedAt: now - TURN_MIN_REFETCH_MS + 1 },
+        { visible: true, now, minAgeMs: TURN_MIN_REFETCH_MS },
+      ),
+    ).toBe(false);
   });
 
   it("treats the first idle load as stale", () => {
     expect(isRateLimitSnapshotStale(idleRateLimits("claude"), now)).toBe(true);
   });
 
-  it("does not keep polling a provider that is not connected", () => {
+  it("holds a not-connected provider off the normal cadence", () => {
     const disconnected = {
       ...idleRateLimits("codex"),
       status: "unavailable" as const,
-      updatedAt: now - RATE_LIMIT_MIN_REFETCH_MS,
+      updatedAt: now - CODEX_MIN_REFETCH_MS,
       error: "Codex CLI not found",
     };
     expect(isRateLimitSnapshotStale(disconnected, now)).toBe(false);
-    expect(
-      shouldFetchProvider(disconnected, { visible: true, now }),
-    ).toBe(false);
+    expect(shouldFetchProvider(disconnected, { visible: true, now })).toBe(
+      false,
+    );
     expect(
       shouldFetchRateLimits({
         visible: true,
@@ -279,16 +327,26 @@ describe("shouldFetchRateLimits", () => {
     ).toBe(false);
   });
 
+  it("retries a not-connected provider so a later sign-in recovers", () => {
+    const disconnected = {
+      ...idleRateLimits("claude"),
+      status: "unavailable" as const,
+      updatedAt: now - RATE_LIMIT_UNAVAILABLE_RETRY_MS,
+      error: "Claude not signed in",
+    };
+    expect(shouldFetchProvider(disconnected, { visible: true, now })).toBe(true);
+  });
+
   it("still polls the connected provider when the other is not", () => {
     const disconnected = {
       ...idleRateLimits("claude"),
       status: "unavailable" as const,
-      updatedAt: now - RATE_LIMIT_MIN_REFETCH_MS,
+      updatedAt: now,
       error: "Claude not signed in",
     };
-    expect(
-      shouldFetchProvider(disconnected, { visible: true, now }),
-    ).toBe(false);
+    expect(shouldFetchProvider(disconnected, { visible: true, now })).toBe(
+      false,
+    );
     expect(
       shouldFetchRateLimits({
         visible: true,
@@ -299,7 +357,7 @@ describe("shouldFetchRateLimits", () => {
     ).toBe(true);
   });
 
-  it("retries a disconnected provider only when forced", () => {
+  it("retries a disconnected provider on demand", () => {
     const disconnected = {
       ...idleRateLimits("codex"),
       status: "unavailable" as const,
@@ -309,5 +367,24 @@ describe("shouldFetchRateLimits", () => {
     expect(
       shouldFetchProvider(disconnected, { force: true, visible: true, now }),
     ).toBe(true);
+  });
+});
+
+describe("usageProviderFor", () => {
+  it("maps only the harnesses the footer tracks", () => {
+    expect(usageProviderFor("claude")).toBe("claude");
+    expect(usageProviderFor("codex")).toBe("codex");
+    expect(usageProviderFor("cursor")).toBe(null);
+    expect(usageProviderFor("")).toBe(null);
+  });
+});
+
+describe("throttledRateLimits", () => {
+  it("drops the numbers instead of showing what we no longer know", () => {
+    const throttled = throttledRateLimits("claude");
+    expect(throttled.session).toBe(null);
+    expect(throttled.weekly).toBe(null);
+    expect(throttled.error).toBe("Usage lookup rate limited");
+    expect(throttled.backoffMs).toBe(RATE_LIMIT_BACKOFF_MS);
   });
 });

@@ -21,35 +21,72 @@ export type ProviderRateLimits = {
   updatedAt: number;
   error: string | null;
   status: RateLimitStatus;
+  /** Floor before the next attempt when the provider told us to back off. */
+  backoffMs?: number;
 };
 
 export const SESSION_WINDOW_MINUTES = 300;
 export const WEEKLY_WINDOW_MINUTES = 10_080;
 
-/** Background poll while the window is visible. */
-export const RATE_LIMIT_POLL_MS = 15 * 60 * 1000;
-/** Skip focus/restore and timer refetches until the snapshot is this old. */
+/**
+ * Timer granularity, not the request rate: every fetch still has to clear the
+ * per-provider floor below. The old 15-minute timer beat against the 5-minute
+ * floor, so a snapshot could sit unrefreshed for a quarter hour.
+ */
+export const RATE_LIMIT_POLL_MS = 60 * 1000;
+/**
+ * Claude's usage endpoint 429s hard at 30-60s polling and does not send
+ * Retry-After, so 5 minutes is the community-safe floor. Do not lower it.
+ */
 export const RATE_LIMIT_MIN_REFETCH_MS = 5 * 60 * 1000;
+/** A Codex read spawns `codex app-server`, so it gets the same slow cadence. */
+export const CODEX_MIN_REFETCH_MS = 5 * 60 * 1000;
+/**
+ * Turn ends may cut ahead of the steady floor, but every fetch resets the
+ * clock, so this doubles as the ceiling on request rate: 30 an hour in a
+ * session of back-to-back turns, half what the endpoint throttles at.
+ */
+export const TURN_MIN_REFETCH_MS = 2 * 60 * 1000;
+/** A provider that reported "not connected" is retried this rarely, not never. */
+export const RATE_LIMIT_UNAVAILABLE_RETRY_MS = 15 * 60 * 1000;
+/** Once throttled the endpoint stays throttled, so stop feeding it. */
+export const RATE_LIMIT_BACKOFF_MS = 30 * 60 * 1000;
+
+export function minRefetchMs(provider: RateLimitProvider): number {
+  return provider === "codex" ? CODEX_MIN_REFETCH_MS : RATE_LIMIT_MIN_REFETCH_MS;
+}
 
 export function isRateLimitSnapshotStale(
   limits: ProviderRateLimits | null | undefined,
   now: number,
-  minAgeMs = RATE_LIMIT_MIN_REFETCH_MS,
+  minAgeMs?: number,
 ): boolean {
   if (!limits || limits.status === "idle") return true;
-  if (limits.status === "unavailable") return false;
+  // Signing in after launch has to recover on its own, but a probe that costs a
+  // process spawn should not retry on the normal cadence.
+  if (limits.status === "unavailable") {
+    return now - limits.updatedAt >= RATE_LIMIT_UNAVAILABLE_RETRY_MS;
+  }
   if (limits.updatedAt <= 0) return true;
-  return now - limits.updatedAt >= minAgeMs;
+  // A backoff outranks the caller's floor: a turn ending is not a reason to
+  // poke an endpoint that just throttled us.
+  const floor =
+    limits.backoffMs ?? minAgeMs ?? minRefetchMs(limits.provider);
+  return now - limits.updatedAt >= floor;
 }
 
 export function shouldFetchProvider(
   limits: ProviderRateLimits,
-  input: { force?: boolean; visible: boolean; now?: number },
+  input: {
+    force?: boolean;
+    visible: boolean;
+    now?: number;
+    minAgeMs?: number;
+  },
 ): boolean {
   if (input.force) return true;
   if (!input.visible) return false;
-  if (limits.status === "unavailable") return false;
-  return isRateLimitSnapshotStale(limits, input.now ?? Date.now());
+  return isRateLimitSnapshotStale(limits, input.now ?? Date.now(), input.minAgeMs);
 }
 
 export function shouldFetchRateLimits(input: {
@@ -58,11 +95,36 @@ export function shouldFetchRateLimits(input: {
   claude: ProviderRateLimits;
   codex: ProviderRateLimits;
   now?: number;
+  minAgeMs?: number;
 }): boolean {
   return (
     shouldFetchProvider(input.claude, input) ||
     shouldFetchProvider(input.codex, input)
   );
+}
+
+const USAGE_STALE = "monocode-usage-stale";
+
+/** Which footer chip a harness spends quota from, if any. */
+export function usageProviderFor(harness: string): RateLimitProvider | null {
+  return harness === "claude" || harness === "codex" ? harness : null;
+}
+
+/** Nudge the usage footer after a turn so the percentage tracks what just ran. */
+export function notifyUsageStale(provider: RateLimitProvider | null): void {
+  if (!provider) return;
+  window.dispatchEvent(new CustomEvent(USAGE_STALE, { detail: provider }));
+}
+
+export function subscribeUsageStale(
+  listener: (provider: RateLimitProvider) => void,
+): () => void {
+  const handler = (event: Event) => {
+    const provider = usageProviderFor((event as CustomEvent<string>).detail);
+    if (provider) listener(provider);
+  };
+  window.addEventListener(USAGE_STALE, handler);
+  return () => window.removeEventListener(USAGE_STALE, handler);
 }
 
 const WINDOW_DURATION_TOLERANCE_MINUTES = 1;
@@ -131,6 +193,21 @@ export function errorRateLimits(
     updatedAt: Date.now(),
     error,
     status: "error",
+  };
+}
+
+/**
+ * A 429 from the usage endpoint. It arrives without Retry-After and tends to
+ * persist, so hold off far longer than a normal error. The chip drops to "—"
+ * rather than keeping the last numbers: we do not know them any more, and the
+ * tooltip has room to say why.
+ */
+export function throttledRateLimits(
+  provider: RateLimitProvider,
+): ProviderRateLimits {
+  return {
+    ...errorRateLimits(provider, "Usage lookup rate limited"),
+    backoffMs: RATE_LIMIT_BACKOFF_MS,
   };
 }
 

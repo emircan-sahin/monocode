@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The usage footer refreshes as soon as a Claude or Codex turn ends, and the poll timer now ticks every minute so a snapshot lands as soon as it is eligible instead of up to fifteen minutes late. Both providers keep a five-minute floor between reads.
+
+### Fixed
+
+- A provider that was not signed in when the app launched no longer stays "not connected" forever; it is retried every 15 minutes, so signing in later recovers on its own.
+- Clicking refresh while a background poll was running did nothing. The click is now queued and runs right after.
+- An idle terminal no longer forks a `ps` every second to name its foreground process.
+- A 429 from Claude's usage endpoint now backs off for 30 minutes instead of retrying on the normal cadence, with the reason in the chip's tooltip.
+
+### Removed
+
+- The usage footer no longer refreshes Claude Code's OAuth token. Those credentials belong to the `claude` CLI, which MonoCode already spawns for every turn and which refreshes them itself; writing to its keychain entry meant a rotation MonoCode could not save left the CLI holding a dead refresh token. The footer now only reads: an expired token shows `expired` until the next Claude turn renews it.
+
 ## [0.1.16] - 2026-08-28
 
 ### Added

@@ -14,11 +14,20 @@ import {
   RATE_LIMIT_POLL_MS,
   rateLimitWindowTooltip,
   shouldFetchProvider,
+  subscribeUsageStale,
+  TURN_MIN_REFETCH_MS,
   type ProviderRateLimits,
+  type RateLimitProvider,
   type RateLimitWindow,
 } from "../lib/rateLimits";
 
 const CLOCK_MS = 30_000;
+
+type RefreshScope = {
+  /** Limit the fetch to one provider; omitted means both. */
+  provider?: RateLimitProvider;
+  minAgeMs?: number;
+};
 
 export function UsageFooter() {
   const [claude, setClaude] = useState<ProviderRateLimits>(() =>
@@ -30,17 +39,32 @@ export function UsageFooter() {
   const [now, setNow] = useState(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
   const inflight = useRef<Promise<void> | null>(null);
+  const pendingForce = useRef(false);
   const claudeRef = useRef(claude);
   const codexRef = useRef(codex);
   claudeRef.current = claude;
   codexRef.current = codex;
 
-  const refresh = useCallback((force = false) => {
-    if (inflight.current) return inflight.current;
+  // The return annotation is required: the queued-force retry below refers to
+  // start from inside its own body.
+  const start = useCallback(function start(
+    force: boolean,
+    scope?: RefreshScope,
+  ): Promise<void> | undefined {
     const visible = document.visibilityState === "visible";
-    const fetchClaude = shouldFetchProvider(claudeRef.current, { force, visible });
-    const fetchCodex = shouldFetchProvider(codexRef.current, { force, visible });
-    if (!fetchClaude && !fetchCodex) return;
+    const wants = (limits: ProviderRateLimits) =>
+      (!scope?.provider || scope.provider === limits.provider) &&
+      shouldFetchProvider(limits, {
+        force,
+        visible,
+        minAgeMs: scope?.minAgeMs,
+      });
+    const fetchClaude = wants(claudeRef.current);
+    const fetchCodex = wants(codexRef.current);
+    if (!fetchClaude && !fetchCodex) {
+      setRefreshing(false);
+      return;
+    }
     if (force) setRefreshing(true);
     const jobs: Promise<void>[] = [];
     if (fetchClaude) {
@@ -63,11 +87,30 @@ export function UsageFooter() {
       .then(() => undefined)
       .finally(() => {
         inflight.current = null;
-        setRefreshing(false);
+        if (!pendingForce.current) {
+          setRefreshing(false);
+          return;
+        }
+        pendingForce.current = false;
+        void start(true);
       });
     inflight.current = run;
     return run;
   }, []);
+
+  const refresh = useCallback(
+    (force = false, scope?: RefreshScope) => {
+      if (!inflight.current) return start(force, scope);
+      // A click landing mid-poll must not be swallowed: the Codex probe owns a
+      // single child process, so queue the forced run instead of racing it.
+      if (force) {
+        pendingForce.current = true;
+        setRefreshing(true);
+      }
+      return inflight.current;
+    },
+    [start],
+  );
 
   useEffect(() => {
     void refresh();
@@ -76,9 +119,13 @@ export function UsageFooter() {
       if (document.visibilityState === "visible") void refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
+    const stopTurns = subscribeUsageStale((provider) => {
+      void refresh(false, { provider, minAgeMs: TURN_MIN_REFETCH_MS });
+    });
     return () => {
       window.clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisible);
+      stopTurns();
     };
   }, [refresh]);
 

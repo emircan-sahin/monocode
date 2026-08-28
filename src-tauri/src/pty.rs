@@ -513,11 +513,13 @@ fn foreground_label(master_fd: i32, shell_pid: u32) -> Option<String> {
         return None;
     }
     let pid = pgrp;
-    if pid <= 0 {
+    // An idle terminal is the common case and it is polled once a second per
+    // pane, so bail before process_label forks a `ps`.
+    if pid <= 0 || pid == shell_pid as i32 {
         return None;
     }
     let label = process_label(pid)?;
-    if pid == shell_pid as i32 || is_shell_name(&label) {
+    if is_shell_name(&label) {
         return None;
     }
     Some(label)
