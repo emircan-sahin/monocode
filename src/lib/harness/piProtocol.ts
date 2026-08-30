@@ -1,7 +1,7 @@
 import type { Attachment, ToolPreview } from "../session";
 import type { AgentModel, ModelSetting } from "../models";
 import type { PiFlavor } from "./piFlavor";
-import { composeToolTitle, extractToolPreview } from "./preview";
+import { extractToolPreview, titleFromToolInput } from "./preview";
 import { streamTextDelta } from "./streamText";
 
 /** Images Pi RPC accepts on `prompt` / `steer`. */
@@ -83,6 +83,33 @@ export function stringField(
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function toolArgsFromEvent(
+  rec: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return (
+    parseArgBag(rec?.args) ??
+    parseArgBag(rec?.arguments) ??
+    parseArgBag(rec?.input) ??
+    {}
+  );
+}
+
+function parseArgBag(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string" && value.trim()) {
+    return tryParseJsonRecord(value);
+  }
+  return asRecord(value);
+}
+
+/** Later execution updates can be partial; keep keys we already have. */
+export function mergeToolInput(
+  current: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  if (Object.keys(next).length === 0) return current;
+  return { ...current, ...next };
+}
+
 export function parseJsonLine(line: string): Record<string, unknown> | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith("{")) return null;
@@ -108,9 +135,9 @@ export function buildPiSpawnArgs(
   input: {
     model?: string;
     resume?: string;
-    /** Catalog probes: do not write a session file. */
+    /** Catalog probes and isolated jobs: do not write a session file. */
     noSession?: boolean;
-    /** Only for throwaway text jobs — never for live chat. */
+    /** Catalog probes and throwaway text jobs — never for live chat. */
     noExtensions?: boolean;
     /** Titles and other one-shot prompts: no tools, skills, or project context. */
     isolated?: boolean;
@@ -316,11 +343,20 @@ export function providerSessionIdFromState(data: unknown): string | undefined {
   return sessionId;
 }
 
+/**
+ * Current Pi puts streaming usage on the frame. 0.80.x put a finished
+ * assistant total on `message` and a live total on `assistantMessageEvent.partial`.
+ * Tool-result messages can carry nested LLM usage for a sub-call; that is not
+ * the context-window level, so only assistant `message.usage` counts.
+ */
 export function contextFromUsage(
   rec: Record<string, unknown>,
   window?: number,
 ): { used?: number; window?: number } | null {
-  const usage = asRecord(rec.usage);
+  const usage =
+    asRecord(rec.usage) ??
+    assistantMessageUsage(rec) ??
+    asRecord(asRecord(asRecord(rec.assistantMessageEvent)?.partial)?.usage);
   if (!usage) return null;
   const used =
     numberField(usage, "totalTokens") ||
@@ -402,10 +438,10 @@ export function toolCallEndFromEvent(
     stringField(event, "toolName");
   if (!id || !name) return null;
   const input =
-    asRecord(call?.arguments) ??
-    asRecord(call?.args) ??
-    asRecord(event?.arguments) ??
-    {};
+    parseArgBag(call?.arguments) ??
+    parseArgBag(call?.args) ??
+    parseArgBag(event?.arguments) ??
+    toolArgsFromEvent(call);
   return { id, name, input };
 }
 
@@ -416,12 +452,17 @@ export function toolExecutionStartFromEvent(
   const id = stringField(rec, "toolCallId");
   const name = stringField(rec, "toolName") ?? "tool";
   if (!id) return null;
-  return { id, name, input: asRecord(rec.args) ?? {} };
+  return { id, name, input: toolArgsFromEvent(rec) };
 }
 
 export function toolExecutionUpdateFromEvent(
   rec: Record<string, unknown>,
-): { id: string; name?: string; detail?: string } | null {
+): {
+  id: string;
+  name?: string;
+  detail?: string;
+  input: Record<string, unknown>;
+} | null {
   if (stringField(rec, "type") !== "tool_execution_update") return null;
   const id = stringField(rec, "toolCallId");
   if (!id) return null;
@@ -430,6 +471,7 @@ export function toolExecutionUpdateFromEvent(
     id,
     name: stringField(rec, "toolName"),
     detail: textFromContent(partial?.content) || undefined,
+    input: toolArgsFromEvent(rec),
   };
 }
 
@@ -451,6 +493,19 @@ export function toolExecutionEndFromEvent(
     detail: textFromContent(result?.content) || undefined,
     isError: rec.isError === true,
   };
+}
+
+/**
+ * A failed turn is reported inside the assistant message, not as an error
+ * frame: `stopReason: "error"` with the reason in `errorMessage`. Empty string
+ * means "failed, no reason".
+ */
+export function turnErrorFromEvent(rec: Record<string, unknown>): string | null {
+  if (stringField(rec, "type") !== "message_end") return null;
+  const message = asRecord(rec.message);
+  if (stringField(message, "role") !== "assistant") return null;
+  if (stringField(message, "stopReason") !== "error") return null;
+  return stringField(message, "errorMessage") ?? "";
 }
 
 export function isAgentSettled(rec: Record<string, unknown>): boolean {
@@ -528,6 +583,7 @@ export function toolKindFromName(toolName: string): string {
   ) {
     return "search";
   }
+  if (normalized === "skill" || normalized === "skills") return "skill";
   return toolName;
 }
 
@@ -535,20 +591,7 @@ export function toolTitle(
   name: string,
   input: Record<string, unknown>,
 ): string {
-  const kind = toolKindFromName(name);
-  const preview = extractToolPreview(
-    { title: name, name, kind, rawInput: input, input },
-    { title: name, name, kind, rawInput: input },
-  );
-  return (
-    composeToolTitle({
-      kind,
-      title: name,
-      path: preview?.path,
-      query: preview?.query,
-      previewKind: preview?.kind,
-    }) || name
-  );
+  return titleFromToolInput(name, toolKindFromName(name), input);
 }
 
 export function previewFromTool(
@@ -655,6 +698,14 @@ function thinkingLabel(level: PiThinkingLevel): string {
   if (level === "xhigh") return "Extra High";
   if (level === "off") return "Off";
   return level.slice(0, 1).toUpperCase() + level.slice(1);
+}
+
+function assistantMessageUsage(
+  rec: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const message = asRecord(rec.message);
+  if (stringField(message, "role") !== "assistant") return null;
+  return asRecord(message?.usage);
 }
 
 function numberField(

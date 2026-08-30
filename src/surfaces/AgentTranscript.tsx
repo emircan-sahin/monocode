@@ -1,15 +1,10 @@
 import {
-  Brain,
   Check,
   ChevronRight,
   Clock,
   CircleDashed,
   Copy,
-  Hammer,
-  Lightbulb,
-  Pencil,
-  Search,
-  Terminal,
+  Minus,
   X,
 } from "lucide-react";
 import {
@@ -24,6 +19,8 @@ import { AttachmentChip } from "../chrome/AttachmentChip";
 import { FilePreview } from "../chrome/FilePreview";
 import { FileTypeIcon } from "../chrome/FileTypeIcon";
 import { PlanPreview } from "../chrome/PlanPreview";
+import { SecondOpinionButton } from "../chrome/SecondOpinionButton";
+import { SecondOpinionCard } from "../chrome/SecondOpinionCard";
 import { TerminalSpinner } from "../chrome/TerminalSpinner";
 import type { ApprovalDecision } from "../lib/harness";
 import {
@@ -33,12 +30,15 @@ import {
   stubFilePreview,
 } from "../lib/harness/preview";
 import { copyText } from "../lib/clipboard";
+import { playCue } from "../lib/sounds";
 import { displayPath, resolveWorkspacePath } from "../lib/paths";
+import { harnessForTurn } from "../lib/secondOpinion";
 import { Shimmer } from "./Shimmer";
 import {
   hasPendingApproval,
   HARNESS_TITLE,
   type Block,
+  type HarnessId,
   type ToolPreview,
 } from "../lib/session";
 import { HarnessIcon } from "../chrome/HarnessIcon";
@@ -81,11 +81,13 @@ type Props = {
   blocks: Block[];
   busy?: boolean;
   cwd?: string;
+  harness?: HarnessId;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onAddToChat?: (text: string) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
   onOpenPlan?: (blockId: string) => void;
+  onSecondOpinion?: (harness: HarnessId, turn: Block[], model: string) => void;
   onJumpToBottomChange?: (show: boolean) => void;
   onJumpToBottomReady?: (jump: () => void) => void;
 };
@@ -94,11 +96,13 @@ export function AgentTranscript({
   blocks,
   busy,
   cwd,
+  harness,
   onApproval,
   onAddToChat,
   onOpenFile,
   onOpenDiff,
   onOpenPlan,
+  onSecondOpinion,
   onJumpToBottomChange,
   onJumpToBottomReady,
 }: Props) {
@@ -291,6 +295,7 @@ export function AgentTranscript({
                     }
                     onApproval={onApproval}
                     onOpenFile={onOpenFile}
+                    onOpenDiff={onOpenDiff}
                   />
                 ) : (
                   <TranscriptBlock
@@ -320,6 +325,14 @@ export function AgentTranscript({
                     startedAt != null ? startedAt + durationMs : undefined
                   }
                   copyText={turnCopyText(turn)}
+                  fromHarness={
+                    harness ? harnessForTurn(blocks, turn, harness) : undefined
+                  }
+                  onSecondOpinion={
+                    onSecondOpinion
+                      ? (target, model) => onSecondOpinion(target, turn, model)
+                      : undefined
+                  }
                 />
               ) : null}
               {busy && !preparingHandoff && isLastTurn && !answering ? (
@@ -362,6 +375,8 @@ function TurnDuration({
   showElapsed = true,
   completedAt,
   copyText: output,
+  fromHarness,
+  onSecondOpinion,
 }: {
   elapsedMs: number | null;
   live?: boolean;
@@ -370,6 +385,8 @@ function TurnDuration({
   showElapsed?: boolean;
   completedAt?: number;
   copyText?: string;
+  fromHarness?: HarnessId;
+  onSecondOpinion?: (harness: HarnessId, model: string) => void;
 }) {
   const label = waiting
     ? "Waiting for approval"
@@ -381,12 +398,19 @@ function TurnDuration({
       aria-label={
         waiting ? "Waiting for approval" : live ? "Agent is working" : label
       }
-      className="flex items-center gap-2 px-4 pt-1 pb-3 font-sans text-sm text-content/40"
+      className="flex items-center gap-3 px-4 pt-1 pb-3 font-sans text-sm text-content/40"
     >
-      {done && output ? (
-        <CopyTurnButton text={output} />
-      ) : done ? (
-        <Check className="size-3.5" strokeWidth={1.75} />
+      {done ? (
+        <span className="flex items-center gap-2">
+          {output ? (
+            <CopyTurnButton text={output} />
+          ) : (
+            <Check className="size-3.5" strokeWidth={1.75} />
+          )}
+          {fromHarness && onSecondOpinion ? (
+            <SecondOpinionButton from={fromHarness} onPick={onSecondOpinion} />
+          ) : null}
+        </span>
       ) : (
         <TerminalSpinner />
       )}
@@ -431,8 +455,9 @@ function CopyTurnButton({ text }: { text: string }) {
       type="button"
       title={copied ? "Copied" : "Copy response"}
       aria-label={copied ? "Copied" : "Copy response"}
-      className="-m-1 rounded-md p-1 text-content/40 hover:bg-content/8 hover:text-content/70"
+      className="-ml-1 rounded-md p-1 text-content/40 hover:bg-content/8 hover:text-content/70"
       onClick={() => {
+        playCue("copy");
         void copyText(text).then(
           () => {
             setCopied(true);
@@ -566,7 +591,8 @@ function UserMessageBlock({
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const textRef = useRef<HTMLPreElement>(null);
-  const text = block.text;
+  const card = block.secondOpinion;
+  const text = card ? "" : block.text;
   const chat = layout === "chat";
 
   useLayoutEffect(() => {
@@ -590,19 +616,24 @@ function UserMessageBlock({
       }
     >
       <div
-        className={`rounded-lg min-w-0 border border-content/10 bg-content/10 px-3 py-2 text-content ${
-          chat ? "w-fit max-w-xl" : ""
+        className={`min-w-0 bg-content/10 px-3 py-2 font-sans text-content ${
+          chat
+            ? "w-fit max-w-xl rounded-xl"
+            : "rounded-lg border border-content/10"
         }`}
         style={{ zIndex: stickyIndex }}
         onClick={overflows ? toggle : undefined}
       >
         {block.attachments?.length ? (
-          <div className={`flex flex-wrap gap-1.5 ${text ? "mb-2" : ""}`}>
+          <div
+            className={`flex flex-wrap gap-1.5 ${text || card ? "mb-2" : ""}`}
+          >
             {block.attachments.map((file) => (
               <AttachmentChip key={file.id} attachment={file} />
             ))}
           </div>
         ) : null}
+        {card ? <SecondOpinionCard card={card} /> : null}
         {text ? (
           <pre
             ref={textRef}
@@ -630,6 +661,7 @@ function ActivityGroup({
   startedAt,
   onApproval,
   onOpenFile,
+  onOpenDiff,
 }: {
   blocks: Block[];
   cwd?: string;
@@ -639,6 +671,7 @@ function ActivityGroup({
   startedAt?: number;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
 }) {
   // Live "+N previous" and the settled zen fold are independent. Sharing one
   // flag kept expanded history from folding when a turn settled.
@@ -697,6 +730,7 @@ function ActivityGroup({
                 expanded
                 onApproval={onApproval}
                 onOpenFile={onOpenFile}
+                onOpenDiff={onOpenDiff}
               />
             ))}
           </div>
@@ -754,6 +788,7 @@ function ActivityGroup({
               cwd={cwd}
               expanded
               onOpenFile={onOpenFile}
+              onOpenDiff={onOpenDiff}
             />
           ))
         : null}
@@ -763,6 +798,7 @@ function ActivityGroup({
           cwd={cwd}
           rolling={rolling}
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
         />
       ) : null}
       {pending.map((block) => (
@@ -772,6 +808,7 @@ function ActivityGroup({
           cwd={cwd}
           onApproval={onApproval}
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
         />
       ))}
     </div>
@@ -788,11 +825,13 @@ function ActivityTicker({
   cwd,
   rolling,
   onOpenFile,
+  onOpenDiff,
 }: {
   block: Block;
   cwd?: string;
   rolling: boolean;
   onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
 }) {
   const [state, setState] = useState<{
     current: Block;
@@ -822,7 +861,14 @@ function ActivityTicker({
   }, [state.leaving, state.roll]);
 
   if (!rolling) {
-    return <ActivityRow block={block} cwd={cwd} onOpenFile={onOpenFile} />;
+    return (
+      <ActivityRow
+        block={block}
+        cwd={cwd}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+      />
+    );
   }
 
   // The incoming row stays in flow so the viewport is exactly one row tall,
@@ -847,6 +893,7 @@ function ActivityTicker({
           cwd={cwd}
           live
           onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
         />
       </div>
     </div>
@@ -864,6 +911,7 @@ function ActivityRow({
   live = false,
   onApproval,
   onOpenFile,
+  onOpenDiff,
 }: {
   block: Block;
   cwd?: string;
@@ -871,6 +919,7 @@ function ActivityRow({
   live?: boolean;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
 }) {
   if (isThinkingBlock(block)) {
     return (
@@ -885,7 +934,7 @@ function ActivityRow({
   if (isProseBlock(block)) {
     return expanded ? (
       <div className="flex min-w-0 gap-1.5 py-1 text-content">
-        <Lightbulb
+        <Minus
           className="mt-[5px] size-3.5 shrink-0 text-content/50"
           strokeWidth={1.75}
         />
@@ -904,6 +953,7 @@ function ActivityRow({
       live={live}
       onApproval={onApproval}
       onOpenFile={onOpenFile}
+      onOpenDiff={onOpenDiff}
     />
   );
 }
@@ -927,7 +977,7 @@ function ActivityThinkingRow({
   const [open, setOpen] = useState(false);
   const text = proseSummary(block.text) || "Thinking";
   const icon = (
-    <Brain
+    <Minus
       className={`size-3.5 shrink-0 text-content/40 ${
         block.streaming ? "zen-thinking-pulse" : ""
       }`}
@@ -987,7 +1037,7 @@ function ActivityNoteRow({ block }: { block: Block }) {
       aria-label={`Agent said: ${text}`}
       className="flex min-w-0 items-center gap-1.5 py-1"
     >
-      <Lightbulb
+      <Minus
         className="size-3.5 shrink-0 text-content/50"
         strokeWidth={1.75}
       />
@@ -1004,16 +1054,25 @@ function ActivityToolRow({
   live = false,
   onApproval,
   onOpenFile,
+  onOpenDiff,
 }: {
   block: Block;
   cwd?: string;
   live?: boolean;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
 }) {
   const label = toolCallLabel(block, cwd);
   const state = toolCallState(block);
   const pending = needsApproval(block);
+  const openFile = isEditTool(
+    block.tool?.kind,
+    block.text || block.tool?.title,
+    block.tool?.preview,
+  )
+    ? (onOpenDiff ?? onOpenFile)
+    : onOpenFile;
 
   return (
     <div className="flex min-w-0 flex-col">
@@ -1021,12 +1080,12 @@ function ActivityToolRow({
         aria-label={`Tool call: ${label}`}
         className="flex min-w-0 items-center gap-1.5 py-1"
       >
-        <ActivityToolIcon block={block} state={state} live={live} />
+        <ActivityToolIcon state={state} live={live} />
         <ToolCallSummary
           label={label}
           preview={block.tool?.preview}
           cwd={cwd}
-          onOpenFile={onOpenFile}
+          onOpenFile={openFile}
         />
         {pending ? null : <ToolCallStatusIcon state={state} />}
       </div>
@@ -1038,11 +1097,9 @@ function ActivityToolRow({
 }
 
 function ActivityToolIcon({
-  block,
   state,
   live = false,
 }: {
-  block: Block;
   state: ToolCallState;
   live?: boolean;
 }) {
@@ -1055,37 +1112,9 @@ function ActivityToolIcon({
     );
   }
 
-  const kind = block.tool?.preview?.kind ?? block.tool?.kind?.toLowerCase();
-  const label = block.text || block.tool?.title || "";
-  const className = "size-3.5 shrink-0 text-content/50";
-
-  if (
-    kind === "shell" ||
-    /^(run|ran)\s+command/i.test(label) ||
-    /shell|bash|execute/i.test(block.tool?.kind ?? "")
-  ) {
-    return <Terminal className={className} strokeWidth={1.75} />;
-  }
-  if (
-    kind === "write" ||
-    isEditTool(block.tool?.kind, label, block.tool?.preview)
-  ) {
-    return <Pencil className={className} strokeWidth={1.75} />;
-  }
-  if (
-    kind === "read" ||
-    isReadTool(block.tool?.kind, label, block.tool?.preview)
-  ) {
-    return <Hammer className={className} strokeWidth={1.75} />;
-  }
-  if (
-    kind === "search" ||
-    isSearchTool(block.tool?.kind, label, block.tool?.preview)
-  ) {
-    return <Search className={className} strokeWidth={1.75} />;
-  }
-
-  return <Hammer className={className} strokeWidth={1.75} />;
+  return (
+    <Minus className="size-3.5 shrink-0 text-content/50" strokeWidth={1.75} />
+  );
 }
 
 function ToolCallStatusIcon({ state }: { state: ToolCallState }) {
@@ -1266,7 +1295,7 @@ function ToolCallSummary({
   onOpenFile?: (path: string) => void;
   interactive?: boolean;
 }) {
-  const parts = label.match(/^(Read|Find)\s+(.+)$/);
+  const parts = label.match(/^(Read|Find|Skill)\s+(.+)$/);
   // A write preview carries the path itself, so edits get the same verb + file
   // chip as reads rather than falling through to a raw label.
   const writeTarget =
@@ -1282,7 +1311,9 @@ function ToolCallSummary({
       ? "Read"
       : /^find$/i.test(label.trim()) && preview?.query
         ? "Find"
-        : undefined);
+        : /^skill$/i.test(label.trim())
+          ? "Skill"
+          : undefined);
   const target =
     parts?.[2] ??
     writeTarget ??
@@ -1300,7 +1331,7 @@ function ToolCallSummary({
       </span>
     );
   }
-  const isFile = action !== "Find";
+  const isFile = action !== "Find" && action !== "Skill";
   const fileName =
     preview?.fileName ||
     target

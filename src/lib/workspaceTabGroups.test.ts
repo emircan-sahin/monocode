@@ -4,6 +4,7 @@ import type { Session } from "./session";
 import {
   filterTabsForProject,
   findTabForProject,
+  planWorkspaceTabClose,
   replaceGroupInTabOrder,
   workspaceTabProject,
 } from "./workspaceTabGroups";
@@ -60,6 +61,113 @@ describe("filterTabsForProject", () => {
     expect(
       filterTabsForProject(tabs, sessions, "/tmp/beta").map((tab) => tab.id),
     ).toEqual(["t2", "t3"]);
+  });
+});
+
+describe("planWorkspaceTabClose", () => {
+  const sessions = [
+    session("m1", "/projects/monocode"),
+    session("r1", "/projects/ruler"),
+    session("m2", "/projects/monocode"),
+  ];
+  const tabs = [tab("tm1", "m1"), tab("tr1", "r1"), tab("tm2", "m2")];
+
+  it("uses the global neighbor in workspace scope", () => {
+    expect(
+      planWorkspaceTabClose({
+        tabs,
+        sessions,
+        closingTabId: "tm2",
+        scope: "workspace",
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "tr1" });
+  });
+
+  it("prefers the previous same-project tab in project scope", () => {
+    expect(
+      planWorkspaceTabClose({
+        tabs,
+        sessions,
+        closingTabId: "tm2",
+        scope: "project",
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "tm1" });
+  });
+
+  it("uses the next same-project tab when none exists to the left", () => {
+    expect(
+      planWorkspaceTabClose({
+        tabs,
+        sessions,
+        closingTabId: "tm1",
+        scope: "project",
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "tm2" });
+  });
+
+  it("keeps the last tab of a project instead of jumping to another", () => {
+    expect(
+      planWorkspaceTabClose({
+        tabs: tabs.slice(0, 2),
+        sessions,
+        closingTabId: "tm1",
+        scope: "project",
+      }),
+    ).toEqual({ action: "keep" });
+  });
+
+  it("still jumps across projects in workspace scope when a project is emptied", () => {
+    expect(
+      planWorkspaceTabClose({
+        tabs: tabs.slice(0, 2),
+        sessions,
+        closingTabId: "tm1",
+        scope: "workspace",
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "tr1" });
+  });
+
+  it("uses the global neighbor for a projectless tab", () => {
+    const projectlessSessions = [
+      ...sessions,
+      session("blank1", "~"),
+      session("blank2", "~"),
+    ];
+    expect(
+      planWorkspaceTabClose({
+        tabs: [tab("projectless", "blank1"), tabs[1]],
+        sessions: projectlessSessions,
+        closingTabId: "projectless",
+        scope: "project",
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "tr1" });
+    expect(
+      planWorkspaceTabClose({
+        tabs: [tab("blank1", "blank1"), tabs[1], tab("blank2", "blank2")],
+        sessions: projectlessSessions,
+        closingTabId: "blank2",
+        scope: "project",
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "tr1" });
+  });
+
+  it("keeps the sole tab or an unknown tab", () => {
+    expect(
+      planWorkspaceTabClose({
+        tabs: [tabs[0]],
+        sessions,
+        closingTabId: "tm1",
+        scope: "workspace",
+      }),
+    ).toEqual({ action: "keep" });
+    expect(
+      planWorkspaceTabClose({
+        tabs,
+        sessions,
+        closingTabId: "missing",
+        scope: "project",
+      }),
+    ).toEqual({ action: "keep" });
   });
 });
 

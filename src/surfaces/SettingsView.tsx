@@ -70,6 +70,7 @@ import {
   probeHarnessAvailability,
   subscribeHarnessAvailability,
 } from "../lib/harness/availability";
+import { refreshHarnessCatalogs } from "../lib/harness/registry";
 import {
   defaultModelId,
   getModelSnapshot,
@@ -125,6 +126,7 @@ import {
   settingsSectionLabel,
   type SettingsSectionId,
 } from "../lib/settings";
+import { loadSoundsEnabled, playCue, saveSoundsEnabled } from "../lib/sounds";
 import {
   installPendingUpdate,
   readAppVersion,
@@ -252,6 +254,7 @@ function GeneralPage() {
   );
   const [transcriptZen, setTranscriptZen] = useState(loadTranscriptZen);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
+  const [soundsEnabled, setSoundsEnabled] = useState(loadSoundsEnabled);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
 
   useEffect(() => {
@@ -281,6 +284,11 @@ function GeneralPage() {
   const onComposerRunner = (next: boolean) => {
     saveComposerRunner(next);
     setComposerRunner(next);
+  };
+
+  const onSoundsEnabled = (next: boolean) => {
+    saveSoundsEnabled(next);
+    setSoundsEnabled(next);
   };
 
   const onClaudeHooks = (next: boolean) => {
@@ -330,12 +338,22 @@ function GeneralPage() {
       </Row>
       <Row
         label="Composer mascot"
-        description="When a turn is running, the project mascot runs along the composer, jumps the scroll-to-latest button, and sometimes grabs a coin."
+        description="When a turn is running, the project mascot runs along the composer, bonks the scroll-to-latest button the first time, then jumps it, and sometimes grabs a coin."
       >
         <Toggle
           label="Composer mascot"
           on={composerRunner}
           onChange={onComposerRunner}
+        />
+      </Row>
+      <Row
+        label="Sounds"
+        description="Short cues when a turn finishes, a new inbox item appears on the project rail, or an update is available. Switches and Copy on a finished turn also play."
+      >
+        <Toggle
+          label="Sounds"
+          on={soundsEnabled}
+          onChange={onSoundsEnabled}
         />
       </Row>
       <Row
@@ -871,6 +889,11 @@ function ProviderRow({
     isPickerProviderVisible(harness),
   );
 
+  useEffect(() => {
+    if (!available || models.length > 0) return;
+    void refreshHarnessCatalogs([harness]);
+  }, [available, harness, models.length]);
+
   const onPickerVisible = (visible: boolean) => {
     savePickerProviderVisible(harness, visible);
     setInPicker(visible);
@@ -1253,7 +1276,10 @@ function Toggle({
       role="switch"
       aria-label={label}
       aria-checked={on}
-      onClick={() => onChange(!on)}
+      onClick={() => {
+        playCue("switch");
+        onChange(!on);
+      }}
       className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
         on ? "bg-accent" : "bg-content/20"
       }`}

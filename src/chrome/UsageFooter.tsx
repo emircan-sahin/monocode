@@ -15,12 +15,26 @@ import {
   rateLimitWindowTooltip,
   shouldFetchProvider,
   type ProviderRateLimits,
+  type RateLimitProvider,
   type RateLimitWindow,
 } from "../lib/rateLimits";
+import { HARNESS_LABEL, HARNESS_TITLE, type HarnessId } from "../lib/session";
 
 const CLOCK_MS = 30_000;
 
-export function UsageFooter() {
+export type UsageFooterSession = {
+  harness: HarnessId;
+};
+
+export function UsageFooter({
+  providers,
+  session,
+}: {
+  providers: RateLimitProvider[];
+  session?: UsageFooterSession;
+}) {
+  const wantClaude = providers.includes("claude");
+  const wantCodex = providers.includes("codex");
   const [claude, setClaude] = useState<ProviderRateLimits>(() =>
     idleRateLimits("claude"),
   );
@@ -38,8 +52,12 @@ export function UsageFooter() {
   const refresh = useCallback((force = false) => {
     if (inflight.current) return inflight.current;
     const visible = document.visibilityState === "visible";
-    const fetchClaude = shouldFetchProvider(claudeRef.current, { force, visible });
-    const fetchCodex = shouldFetchProvider(codexRef.current, { force, visible });
+    const fetchClaude =
+      wantClaude &&
+      shouldFetchProvider(claudeRef.current, { force, visible });
+    const fetchCodex =
+      wantCodex &&
+      shouldFetchProvider(codexRef.current, { force, visible });
     if (!fetchClaude && !fetchCodex) return;
     if (force) setRefreshing(true);
     const jobs: Promise<void>[] = [];
@@ -67,7 +85,7 @@ export function UsageFooter() {
       });
     inflight.current = run;
     return run;
-  }, []);
+  }, [wantClaude, wantCodex]);
 
   useEffect(() => {
     void refresh();
@@ -87,28 +105,48 @@ export function UsageFooter() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const showUsage = wantClaude || wantCodex;
+
   return (
     <footer
-      aria-label="Provider usage"
+      aria-label={showUsage ? "Provider usage" : "Session"}
       className="flex h-7 shrink-0 items-center gap-3 overflow-x-auto border-t border-content/10 px-3 text-[11px] text-content/55"
     >
-      <ProviderChip limits={claude} now={now} />
-      <ProviderChip limits={codex} now={now} />
-      <button
-        type="button"
-        className="ml-auto grid size-5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-50"
-        aria-label="Refresh usage"
-        title="Refresh usage"
-        disabled={refreshing}
-        onClick={() => void refresh(true)}
-      >
-        <RefreshCw
-          className={`size-3 ${refreshing ? "animate-spin" : ""}`}
-          strokeWidth={1.75}
-          aria-hidden
-        />
-      </button>
+      {showUsage ? (
+        <>
+          {wantClaude ? <ProviderChip limits={claude} now={now} /> : null}
+          {wantCodex ? <ProviderChip limits={codex} now={now} /> : null}
+          <button
+            type="button"
+            className="ml-auto grid size-5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-50"
+            aria-label="Refresh usage"
+            title="Refresh usage"
+            disabled={refreshing}
+            onClick={() => void refresh(true)}
+          >
+            <RefreshCw
+              className={`size-3 ${refreshing ? "animate-spin" : ""}`}
+              strokeWidth={1.75}
+              aria-hidden
+            />
+          </button>
+        </>
+      ) : session ? (
+        <SessionChip session={session} />
+      ) : null}
     </footer>
+  );
+}
+
+function SessionChip({ session }: { session: UsageFooterSession }) {
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap"
+      title={HARNESS_TITLE[session.harness]}
+    >
+      <HarnessIcon harness={session.harness} className="size-3 shrink-0" />
+      <span>{HARNESS_LABEL[session.harness]}</span>
+    </span>
   );
 }
 

@@ -15,6 +15,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A permission prompt that a `PermissionRequest` hook resolves before you do is no longer labelled "Rejected" in the transcript.
 
+## [0.1.18] - 2026-08-29
+
+### Added
+
+- Sounds in Settings → General: a short cue when a turn finishes, when a new inbox item lights the project-rail dot, or when an update is available. Switches click, and Copy on a finished turn plays a scan. Off mutes every cue.
+
+### Fixed
+
+- Skill tool rows only said `Skill`. They now show `Skill /name`, the same way reads show the file. In #32.
+- Shell tool rows only showed the tool name (`bash` / `Bash`) for Claude, Pi, and some other providers, so you could not see or cancel the command that was about to run. The activity ticker now shows the command itself, matching Codex. In #32.
+- The `@` mention picker in the composer only offered files, so you could not point the agent at a folder. Directories from the project tree are selectable now. In #34.
+- Codex turns looked finished while the agent was still working: “Worked for” froze and the composer stop button went back to send, even though tools and text kept arriving. The turn now stays live until Codex actually completes it.
+
+## [0.1.17] - 2026-08-29
+
+### Added
+
+- Second opinion: the scale icon next to Copy on a finished turn sends that work to another provider in a split pane. Hover a provider to pick its model. The reviewing session shows a compact card instead of the review prompt.
+
+### Changed
+
+- Provider CLIs stay warm for five minutes after a turn so follow-ups stay instant, then park. Title/commit one-shots no longer leave a second process running. The usage footer only polls Claude/Codex when a session in this window actually uses them.
+
+### Fixed
+
+- `npm run set-version` left `package-lock.json` behind, so the lockfile still called itself 0.1.0 sixteen releases on. The script now updates both of the version fields it carries, and the lockfile is back in sync.
+- Closing a tab in Deck keeps the active tab in the current project when another tab from that project is open. In #22 by @kinsomicrote.
+- Closing the last tab of a project in Deck no longer jumps to another project. Command+W stays where you are; Classic layout still flows across mixed-project tabs.
+- Unused provider CLIs no longer start at launch. Catalog probes run only for harnesses in the restored workspace, or when you open that provider in the model picker. Pi/omp probes skip extensions so a leftover `pi` process cannot sit at ~1GB while you work in Codex or Claude. Diagnosed in #19.
+- A Pi or omp turn that fails now reports why. Pi puts the failure on the assistant message (`stopReason: "error"`) instead of an error frame, so an expired provider token ended empty and looked like the agent ignoring you. In #23 by @emircan-sahin.
+- The context meter stayed at zero for a Pi or omp turn. Usage lives on the assistant message (and the streaming partial), not the top of the frame. In #23 by @emircan-sahin.
+
 ## [0.1.16] - 2026-08-28
 
 ### Added
@@ -271,7 +303,9 @@ First public release. macOS (Apple Silicon) only.
 - Updater endpoint and minisign public key are injected at release time rather than committed, so forks do not inherit the maintainer's update channel.
 - macOS release builds sign with `APPLE_SIGNING_IDENTITY` via a config overlay; the committed default remains ad-hoc `-` for community builds.
 
-[Unreleased]: https://github.com/hardbeat920/monocode/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/hardbeat920/monocode/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/hardbeat920/monocode/compare/v0.1.17...v0.1.18
+[0.1.17]: https://github.com/hardbeat920/monocode/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/hardbeat920/monocode/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/hardbeat920/monocode/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/hardbeat920/monocode/compare/v0.1.13...v0.1.14

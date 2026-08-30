@@ -10,6 +10,7 @@ import {
   extensionUiResponse,
   extensionUiTitle,
   isAgentSettled,
+  mergeToolInput,
   modelsFromRpcData,
   needsExtensionUiReply,
   parseExtensionUiRequest,
@@ -21,8 +22,10 @@ import {
   providerSessionIdFromState,
   toolCallStartFromEvent,
   toolExecutionEndFromEvent,
+  toolExecutionStartFromEvent,
   toolKindFromName,
   toolTitle,
+  turnErrorFromEvent,
 } from "./piProtocol";
 import { OMP_FLAVOR, PI_FLAVOR } from "./piFlavor";
 
@@ -46,9 +49,12 @@ describe("buildPiSpawnArgs", () => {
       "rpc",
       "--no-session",
     ]);
+  });
+
+  it("strips extensions for throwaway catalog probes", () => {
     expect(
       buildPiSpawnArgs(PI_FLAVOR, { noSession: true, noExtensions: true }),
-    ).toContain("--no-extensions");
+    ).toEqual(["--mode", "rpc", "--no-session", "--no-extensions"]);
   });
 
   it("isolates throwaway text jobs from tools and project context", () => {
@@ -241,6 +247,31 @@ describe("streaming events", () => {
     ).toEqual({ id: "call_1", name: "write", index: 1 });
 
     expect(
+      toolExecutionStartFromEvent({
+        type: "tool_execution_start",
+        toolCallId: "call_1",
+        toolName: "bash",
+        args: { command: "ls -la" },
+      }),
+    ).toEqual({
+      id: "call_1",
+      name: "bash",
+      input: { command: "ls -la" },
+    });
+    expect(
+      toolExecutionStartFromEvent({
+        type: "tool_execution_start",
+        toolCallId: "call_2",
+        toolName: "bash",
+        args: '{"command":"pwd"}',
+      }),
+    ).toEqual({
+      id: "call_2",
+      name: "bash",
+      input: { command: "pwd" },
+    });
+
+    expect(
       toolExecutionEndFromEvent({
         type: "tool_execution_end",
         toolCallId: "call_1",
@@ -265,8 +296,16 @@ describe("tools and models", () => {
   it("titles built-in Pi tools", () => {
     expect(toolKindFromName("bash")).toBe("execute");
     expect(toolKindFromName("edit")).toBe("edit");
+    expect(toolTitle("bash", { command: "git status -s" })).toBe("git status -s");
     expect(toolTitle("read", { path: "src/a.ts" })).toMatch(/src\/a\.ts/);
     expect(previewFromTool("write", { path: "src/a.ts" })?.kind).toBe("write");
+  });
+
+  it("keeps earlier tool args when a later update is partial", () => {
+    expect(
+      mergeToolInput({ command: "git status -s" }, { timeout: 30 }),
+    ).toEqual({ command: "git status -s", timeout: 30 });
+    expect(mergeToolInput({ command: "ls" }, {})).toEqual({ command: "ls" });
   });
 
   it("flattens get_available_models payloads", () => {
@@ -314,10 +353,106 @@ describe("tools and models", () => {
         usage: { totalTokens: 120 },
       }, 200),
     ).toEqual({ used: 120, window: 200 });
+    // Live 0.80.x shapes: finished total on the assistant message, streaming
+    // total on the nested partial. Tool-result usage is a nested LLM call, not
+    // the context-window level.
+    expect(
+      contextFromUsage(
+        {
+          type: "message_end",
+          message: { role: "assistant", usage: { totalTokens: 18014 } },
+        },
+        200000,
+      ),
+    ).toEqual({ used: 18014, window: 200000 });
+    expect(
+      contextFromUsage(
+        {
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            partial: { usage: { input: 3, output: 1, cacheWrite: 18007 } },
+          },
+        },
+        200000,
+      ),
+    ).toEqual({ used: 18011, window: 200000 });
+    expect(
+      contextFromUsage(
+        { type: "message_end", message: { role: "user" } },
+        200000,
+      ),
+    ).toBeNull();
+    expect(
+      contextFromUsage(
+        {
+          type: "message_end",
+          message: {
+            role: "toolResult",
+            usage: { totalTokens: 150 },
+          },
+        },
+        200000,
+      ),
+    ).toBeNull();
     expect(
       contextFromSessionStats({
         contextUsage: { tokens: 60, contextWindow: 200000, percent: 30 },
       }),
     ).toEqual({ used: 60, window: 200000 });
+  });
+});
+
+describe("turnErrorFromEvent", () => {
+  it("reads the reason a turn failed with no content", () => {
+    expect(
+      turnErrorFromEvent({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "No API key for provider: openai-codex",
+        },
+      }),
+    ).toBe("No API key for provider: openai-codex");
+  });
+
+  it("still reports a failure that carries no reason", () => {
+    expect(
+      turnErrorFromEvent({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error" },
+      }),
+    ).toBe("");
+  });
+
+  it("ignores healthy messages, other roles, and other frames", () => {
+    expect(
+      turnErrorFromEvent({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "end_turn", content: [{ type: "text", text: "hi" }] },
+      }),
+    ).toBeNull();
+    expect(
+      turnErrorFromEvent({
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          stopReason: "error",
+          errorMessage: "tool failed",
+        },
+      }),
+    ).toBeNull();
+    expect(
+      turnErrorFromEvent({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "boom",
+        },
+      }),
+    ).toBeNull();
   });
 });
