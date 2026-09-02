@@ -356,7 +356,7 @@ function GeneralPage({
       </Row>
       <Row
         label="Reply pace"
-        description="The agent CLI hands us a paragraph at a time, so a reply lands in jumps of five or ten lines. Smooth spreads each burst across frames as it arrives, painting every frame. Balanced does the same in coarser steps for about a third less work. Off takes the text exactly as the CLI sends it, which is where the jumps came from — keep it for a machine that needs the frames back."
+        description="The agent CLI hands over a paragraph at a time, so a reply lands in jumps of five or ten lines. Off takes the text exactly as it arrives, which is where the jumps come from. Smooth spreads each burst across frames instead, painting every frame; Balanced does the same in coarser steps for about a third less work. Smoothing costs a few percent of a core while a reply streams, so it is off unless you turn it on."
       >
         <Segmented
           label="Reply pace"

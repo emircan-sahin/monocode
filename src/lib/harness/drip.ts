@@ -9,7 +9,10 @@ import type { HarnessEvent } from "./types";
  * character budget's worth and holds the rest.
  */
 
-/** `off` is no pacing: every delta lands whole, the moment the CLI sends it. */
+/**
+ * `off` is no pacing: every delta lands whole, the moment the CLI sends it —
+ * what the transcript did before, and the default, so smoothing is opt-in.
+ */
 export type StreamPace = "off" | "balanced" | "smooth";
 
 /**
@@ -33,7 +36,7 @@ export const DRIP_FRAME_MS = 1000 / 60;
 // of the backlog per step instead of the whole thing in one paint.
 const MAX_STEP_MS = 100;
 
-export const STREAM_PACE_DEFAULT: StreamPace = "smooth";
+export const STREAM_PACE_DEFAULT: StreamPace = "off";
 
 export function isStreamPace(value: unknown): value is StreamPace {
   return value === "off" || value === "balanced" || value === "smooth";

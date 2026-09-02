@@ -148,13 +148,12 @@ describe("dripHarnessEvents", () => {
 describe("stream pace", () => {
   const paces: StreamPace[] = ["off", "balanced", "smooth"];
 
-  it("defaults to the smooth pace", () => {
+  it("defaults to off, so an install that never opens Settings is unchanged", () => {
     const body = "x".repeat(64);
     const implicit = dripHarnessEvents(session(), [delta(body)]);
-    const explicit = dripHarnessEvents(session(), [delta(body)], "smooth");
-    expect(tail(implicit.session)).toBe(tail(explicit.session));
-    expect(implicit.pending).toEqual(explicit.pending);
-    expect(STREAM_PACE_DEFAULT).toBe("smooth");
+    expect(tail(implicit.session)).toBe(body);
+    expect(implicit.pending).toEqual([]);
+    expect(STREAM_PACE_DEFAULT).toBe("off");
   });
 
   it("applies a burst whole when pacing is off", () => {

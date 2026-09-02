@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Replies stream in smoothly instead of arriving in jumps of five or ten lines. The agent CLIs hand over a paragraph at a time — Claude's sends about 80 characters 2.4 times a second — and the transcript now spreads each burst across frames as it arrives. Settings > General > Reply pace picks how finely: Smooth (the default), Balanced for a third less work per second, or Off for the old behaviour.
+- Settings > General > Reply pace can stream replies smoothly instead of in jumps of five or ten lines. The agent CLIs hand over a paragraph at a time — Claude's sends about 80 characters 2.4 times a second — so Smooth spreads each burst across frames as it arrives, and Balanced does the same in coarser steps for about a third less work. It defaults to Off, which is the existing behaviour.
 
 ## [0.1.29] - 2026-09-02
 
