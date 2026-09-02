@@ -109,6 +109,7 @@ import {
   bindHarnessSession,
   cancelHarnessTurn,
   canSteerHarness,
+  dripHarnessEvents,
   forgetHarnessSession,
   generateHarnessTitle,
   isLiveHarness,
@@ -559,10 +560,12 @@ export default function App({
   const workspaceSyncKey = useRef<string | null>(null);
   const observedSessions = useRef(new Map<string, Session>());
   const pendingPersist = useRef(new Map<string, Session>());
-  // Tokens arrive many times per frame; apply them once so React/markdown aren't
-  // recomputed for every delta.
+  // One queue per session, drained a frame at a time: a burst of deltas costs
+  // one React/markdown pass, and a delta far larger than a frame's worth of
+  // text is spread across frames instead of landing whole. See `drip`.
   const harnessQueued = useRef(new Map<string, HarnessEvent[]>());
   const harnessFlush = useRef<ScheduledFlush | null>(null);
+  const applyQueuedRef = useRef<(drainAll: boolean) => void>(() => undefined);
   const skipForgetSessionIds = useRef(new Set<string>());
   const importedSessionsApplied = useRef(false);
 
@@ -582,22 +585,39 @@ export default function App({
     }
   }, [windowTransfer, resumed]);
 
-  const flushHarnessEvents = useCallback(() => {
+  const applyQueuedEvents = useCallback((drainAll: boolean) => {
     cancelScheduledFlush(harnessFlush.current);
     harnessFlush.current = null;
     const batches = harnessQueued.current;
     if (batches.size === 0) return;
-    harnessQueued.current = new Map();
+    const held = new Map<string, HarnessEvent[]>();
+    harnessQueued.current = held;
     const prev = sessionsRef.current;
     const next = prev.map((session) => {
       const events = batches.get(session.id);
-      return events ? events.reduce(applyHarnessEvent, session) : session;
+      if (!events) return session;
+      if (drainAll) return events.reduce(applyHarnessEvent, session);
+      const { applied, pending } = dripHarnessEvents(events);
+      if (pending.length) held.set(session.id, pending);
+      return applied.reduce(applyHarnessEvent, session);
     });
-    if (!next.some((session, index) => session !== prev[index])) return;
-    sessionsRef.current = next;
-    syncDockBadge(next);
-    setSessions(next);
+    if (next.some((session, index) => session !== prev[index])) {
+      sessionsRef.current = next;
+      syncDockBadge(next);
+      setSessions(next);
+    }
+    if (held.size && !harnessFlush.current) {
+      harnessFlush.current = scheduleHarnessFlush(() =>
+        applyQueuedRef.current(false),
+      );
+    }
   }, []);
+  applyQueuedRef.current = applyQueuedEvents;
+
+  const flushHarnessEvents = useCallback(
+    () => applyQueuedEvents(true),
+    [applyQueuedEvents],
+  );
 
   const applyApprovalEvent = useCallback(
     (sessionId: string, event: HarnessEvent) => {
@@ -634,10 +654,12 @@ export default function App({
       if (events) events.push(event);
       else queued.set(sessionId, [event]);
       if (!harnessFlush.current) {
-        harnessFlush.current = scheduleHarnessFlush(flushHarnessEvents);
+        harnessFlush.current = scheduleHarnessFlush(() =>
+          applyQueuedRef.current(false),
+        );
       }
     },
-    [applyApprovalEvent, flushHarnessEvents],
+    [applyApprovalEvent],
   );
 
   useEffect(() => {
@@ -646,6 +668,9 @@ export default function App({
     const stopBridge = startHarnessBridge();
     const reap = () => {
       if (isAppQuitting()) return;
+      // Text still waiting on the paced reveal is real output; land it before
+      // the snapshot goes to disk.
+      applyQueuedRef.current(true);
       void persistQuitState(
         sessionsRef.current,
         tabsRef.current,
@@ -667,6 +692,7 @@ export default function App({
       window.removeEventListener("pagehide", reap);
       window.removeEventListener("beforeunload", reap);
       stopBridge();
+      applyQueuedRef.current(true);
       cancelScheduledFlush(harnessFlush.current);
       harnessFlush.current = null;
     };

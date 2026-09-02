@@ -1,5 +1,6 @@
 export { startHarnessBridge, killAllChildren } from "./child";
 export { applyHarnessEvent, appendUser, appendSteerUser, stopStreaming } from "./apply";
+export { dripHarnessEvents } from "./drip";
 export {
   sendCursorTurn,
   cancelCursorTurn,
