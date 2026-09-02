@@ -123,6 +123,7 @@ import {
   startHarnessBridge,
   stopStreaming,
   pickTextHarness,
+  STREAM_PACE_DEFAULT,
   type ApprovalDecision,
   type HarnessEvent,
   type UserQuestionReply,
@@ -270,9 +271,11 @@ import {
   loadLiveAgentsEnabled,
   loadNotesEnabled,
   loadSettingsSection,
+  loadStreamPace,
   saveSettingsSection,
   subscribeLiveAgentsEnabled,
   subscribeNotesEnabled,
+  subscribeStreamPace,
   type SettingsSectionId,
 } from "./lib/settings";
 import {
@@ -318,6 +321,19 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(value)) return false;
   }
   return true;
+}
+
+/** Longest a turn waits for the paced reveal to finish before it seals. */
+const SETTLE_TIMEOUT_MS = 3000;
+
+function releaseQueueWaiters(
+  waiters: { current: Map<string, Array<() => void>> },
+  sessionId: string,
+) {
+  const pending = waiters.current.get(sessionId);
+  if (!pending) return;
+  waiters.current.delete(sessionId);
+  for (const waiter of pending) waiter();
 }
 
 type ScheduledFlush = { kind: "raf" | "timeout"; id: number };
@@ -488,6 +504,13 @@ export default function App({
     loadLiveAgentsEnabled,
     () => true,
   );
+  const streamPace = useSyncExternalStore(
+    subscribeStreamPace,
+    loadStreamPace,
+    () => STREAM_PACE_DEFAULT,
+  );
+  const streamPaceRef = useRef(streamPace);
+  streamPaceRef.current = streamPace;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateNotice, setUpdateNotice] = useState(installedUpdate);
   const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
@@ -566,6 +589,9 @@ export default function App({
   const harnessQueued = useRef(new Map<string, HarnessEvent[]>());
   const harnessFlush = useRef<ScheduledFlush | null>(null);
   const applyQueuedRef = useRef<(drainAll: boolean) => void>(() => undefined);
+  // Turn end waits on these so a paced reveal finishes writing before the
+  // block is sealed; without it the slow pace would snap its tail in.
+  const queueWaiters = useRef(new Map<string, Array<() => void>>());
   const skipForgetSessionIds = useRef(new Set<string>());
   const importedSessionsApplied = useRef(false);
 
@@ -597,7 +623,10 @@ export default function App({
       const events = batches.get(session.id);
       if (!events) return session;
       if (drainAll) return events.reduce(applyHarnessEvent, session);
-      const { applied, pending } = dripHarnessEvents(events);
+      const { applied, pending } = dripHarnessEvents(
+        events,
+        streamPaceRef.current,
+      );
       if (pending.length) held.set(session.id, pending);
       return applied.reduce(applyHarnessEvent, session);
     });
@@ -611,6 +640,9 @@ export default function App({
         applyQueuedRef.current(false),
       );
     }
+    for (const sessionId of [...queueWaiters.current.keys()]) {
+      if (!held.has(sessionId)) releaseQueueWaiters(queueWaiters, sessionId);
+    }
   }, []);
   applyQueuedRef.current = applyQueuedEvents;
 
@@ -619,10 +651,31 @@ export default function App({
     [applyQueuedEvents],
   );
 
+  /** Resolves once the session has no text left waiting on the paced reveal. */
+  const settleSessionQueue = useCallback((sessionId: string) => {
+    if (!harnessQueued.current.get(sessionId)?.length) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiters = queueWaiters.current.get(sessionId) ?? [];
+      waiters.push(resolve);
+      queueWaiters.current.set(sessionId, waiters);
+      // A stalled queue must not leave the turn spinning forever.
+      window.setTimeout(() => {
+        const current = queueWaiters.current.get(sessionId);
+        if (current) {
+          const rest = current.filter((waiter) => waiter !== resolve);
+          if (rest.length) queueWaiters.current.set(sessionId, rest);
+          else queueWaiters.current.delete(sessionId);
+        }
+        resolve();
+      }, SETTLE_TIMEOUT_MS);
+    });
+  }, []);
+
   const applyApprovalEvent = useCallback(
     (sessionId: string, event: HarnessEvent) => {
       const queued = harnessQueued.current.get(sessionId) ?? [];
       harnessQueued.current.delete(sessionId);
+      releaseQueueWaiters(queueWaiters, sessionId);
       const events = [...queued, event];
       const prev = sessionsRef.current;
       const next = prev.map((session) =>
@@ -3288,6 +3341,8 @@ export default function App({
           });
         } finally {
           if (turnGen.current.get(sessionId) !== gen) return;
+          await settleSessionQueue(sessionId);
+          if (turnGen.current.get(sessionId) !== gen) return;
           flushHarnessEvents();
           setSessions((prev) =>
             prev.map((s) => (s.id === sessionId ? stopStreaming(s) : s)),
@@ -3304,7 +3359,7 @@ export default function App({
         }
       })();
     },
-    [enqueueHarnessEvent, flushHarnessEvents],
+    [enqueueHarnessEvent, flushHarnessEvents, settleSessionQueue],
   );
 
   const openSessionBeside = useCallback(

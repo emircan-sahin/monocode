@@ -111,6 +111,7 @@ import {
   saveLinearToken,
   type LinearTeam,
 } from "../lib/linear";
+import type { StreamPace } from "../lib/harness";
 import { loadTabGroupLabels, resolveTabGroupLabel } from "../lib/tabGroups";
 import {
   filterKeybindings,
@@ -120,11 +121,13 @@ import {
   loadGridArcadeEnabled,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
+  loadStreamPace,
   saveClaudeHooks,
   saveComposerRunner,
   saveGridArcadeEnabled,
   saveLiveAgentsEnabled,
   saveNotesEnabled,
+  saveStreamPace,
   settingsSectionDescription,
   settingsSectionLabel,
   type SettingsSectionId,
@@ -268,6 +271,7 @@ function GeneralPage({
   );
   const [soundsEnabled, setSoundsEnabled] = useState(loadSoundsEnabled);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
+  const [streamPace, setStreamPace] = useState<StreamPace>(loadStreamPace);
 
   useEffect(() => {
     const onAnchor = (event: Event) => {
@@ -319,6 +323,11 @@ function GeneralPage({
     setClaudeHooks(next);
   };
 
+  const onStreamPace = (next: StreamPace) => {
+    saveStreamPace(next);
+    setStreamPace(next);
+  };
+
   return (
     <>
       <Row
@@ -343,6 +352,21 @@ function GeneralPage({
           label="Anchor prompts to top"
           on={transcriptAnchor}
           onChange={onTranscriptAnchor}
+        />
+      </Row>
+      <Row
+        label="Reply pace"
+        description="The agent CLI hands us a paragraph at a time, so replies used to land in jumps. Smooth spreads each burst across frames as it arrives. Balanced does the same in coarser steps, for a little less work per second. Slow writes at a steady reading pace and trails the agent by about a second, finishing shortly after it does."
+      >
+        <Segmented
+          label="Reply pace"
+          value={streamPace}
+          options={[
+            { value: "slow", label: "Slow" },
+            { value: "balanced", label: "Balanced" },
+            { value: "smooth", label: "Smooth" },
+          ]}
+          onChange={onStreamPace}
         />
       </Row>
       <Row

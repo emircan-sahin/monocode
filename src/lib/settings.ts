@@ -1,3 +1,8 @@
+import {
+  isStreamPace,
+  STREAM_PACE_DEFAULT,
+  type StreamPace,
+} from "./harness/drip";
 import { ALT, IS_MAC, MOD, SHIFT } from "./platform";
 
 const SECTION_KEY = "monocode.settingsSection";
@@ -217,6 +222,39 @@ export function subscribeGridArcadeEnabled(onStoreChange: () => void) {
   window.addEventListener(GRID_ARCADE_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(GRID_ARCADE_ENABLED_CHANGE_EVENT, onStoreChange);
+}
+
+const STREAM_PACE_KEY = "monocode.streamPace";
+
+/** Fired on `window` when the transcript stream pace changes. */
+export const STREAM_PACE_CHANGE_EVENT = "monocode:stream-pace-change";
+
+export function loadStreamPace(): StreamPace {
+  try {
+    const raw = localStorage.getItem(STREAM_PACE_KEY);
+    return isStreamPace(raw) ? raw : STREAM_PACE_DEFAULT;
+  } catch {
+    return STREAM_PACE_DEFAULT;
+  }
+}
+
+export function saveStreamPace(value: StreamPace) {
+  try {
+    localStorage.setItem(STREAM_PACE_KEY, value);
+  } catch {
+    // private mode / quota
+  }
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<StreamPace>(STREAM_PACE_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeStreamPace(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(STREAM_PACE_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(STREAM_PACE_CHANGE_EVENT, onStoreChange);
 }
 
 const CLAUDE_HOOKS_KEY = "monocode.claudeHooks";
