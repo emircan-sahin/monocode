@@ -1,3 +1,5 @@
+import type { Block, Session } from "../session";
+import { applyHarnessEvent } from "./apply";
 import type { HarnessEvent } from "./types";
 
 /**
@@ -9,8 +11,8 @@ import type { HarnessEvent } from "./types";
  * delta whole therefore drops a whole paragraph into the transcript at once,
  * which is what reads as a stuttering stream.
  *
- * So a frame's worth of queued events is cut at a character budget: the text
- * before the cut is applied now, the rest waits for the next frame.
+ * So a step's worth of queued events is cut at a character budget: the text
+ * before the cut is applied now, the rest waits for the next step.
  */
 
 /** `off` is no pacing: every delta lands whole, the moment the CLI sends it. */
@@ -58,15 +60,13 @@ export function isStreamPace(value: unknown): value is StreamPace {
   return value === "off" || value === "balanced" || value === "smooth";
 }
 
-function deltaText(event: HarnessEvent): string | null {
-  if (event.type === "message.delta" || event.type === "reasoning.delta") {
-    return event.text;
-  }
-  return null;
-}
+type TextDelta = Extract<
+  HarnessEvent,
+  { type: "message.delta" | "reasoning.delta" }
+>;
 
-function withText(event: HarnessEvent, text: string): HarnessEvent {
-  return { ...event, text } as HarnessEvent;
+function isTextDelta(event: HarnessEvent): event is TextDelta {
+  return event.type === "message.delta" || event.type === "reasoning.delta";
 }
 
 function drainBudget(
@@ -77,7 +77,9 @@ function drainBudget(
   const { drainMs, minCharsPerSecond } = STREAM_PACE_PROFILES[pace];
   const step = Math.min(Math.max(elapsedMs, 1), MAX_STEP_MS);
   let pending = 0;
-  for (const event of events) pending += deltaText(event)?.length ?? 0;
+  for (const event of events) {
+    if (isTextDelta(event)) pending += event.text.length;
+  }
   // Rounding up a product of floats would turn an exact 16 into 17.
   const ceil = (value: number) => Math.ceil(value - 1e-9);
   return Math.max(
@@ -86,41 +88,72 @@ function drainBudget(
   );
 }
 
+function lastBlock(session: Session): Block | undefined {
+  return session.blocks[session.blocks.length - 1];
+}
+
+function withLastBlockText(session: Session, text: string): Session {
+  const blocks = session.blocks.slice();
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], text };
+  return { ...session, blocks };
+}
+
 /**
- * Split one session's queued events into what to apply this frame and what to
- * hold. Order is preserved on both sides: a tool call or a turn end queued
- * behind text stays behind it, so nothing overtakes the text it followed.
+ * Apply one session's queued events up to this step's character budget and
+ * return what is still waiting. Order is preserved: a tool call or a turn end
+ * queued behind text stays behind it, so nothing overtakes the text it
+ * followed.
+ *
+ * A delta is never sliced before it is merged. The whole delta goes through
+ * `applyHarnessEvent`, whose snapshot-versus-token join needs the full text to
+ * decide; only the merged result is cut, and the tail is re-queued `verbatim`.
+ * Slicing first would hand the join fragments it misreads — a slice equal to
+ * the block so far, say, is dropped as a repeated snapshot.
  */
 export function dripHarnessEvents(
+  session: Session,
   events: HarnessEvent[],
   pace: StreamPace = STREAM_PACE_DEFAULT,
   elapsedMs: number = DRIP_FRAME_MS,
-): { applied: HarnessEvent[]; pending: HarnessEvent[] } {
-  if (pace === "off") return { applied: events, pending: [] };
+): { session: Session; pending: HarnessEvent[] } {
+  if (pace === "off") {
+    return { session: events.reduce(applyHarnessEvent, session), pending: [] };
+  }
   let budget = drainBudget(events, pace, elapsedMs);
-  const applied: HarnessEvent[] = [];
+  let current = session;
 
   for (let index = 0; index < events.length; index++) {
     const event = events[index];
-    const text = deltaText(event);
-    if (text === null) {
-      applied.push(event);
+    if (!isTextDelta(event)) {
+      current = applyHarnessEvent(current, event);
       continue;
     }
-    if (text.length <= budget) {
-      applied.push(event);
-      budget -= text.length;
+    if (budget <= 0) return { session: current, pending: events.slice(index) };
+
+    const before = lastBlock(current);
+    const next = applyHarnessEvent(current, event);
+    const after = lastBlock(next);
+    if (!after) {
+      current = next;
       continue;
     }
-    if (budget > 0) applied.push(withText(event, text.slice(0, budget)));
+    // The join only ever extends the block, so what it added is a suffix.
+    const base = before && after.id === before.id ? before.text.length : 0;
+    const added = after.text.length - base;
+    if (added <= budget) {
+      current = next;
+      budget -= added;
+      continue;
+    }
+    const cut = base + budget;
     return {
-      applied,
+      session: withLastBlockText(next, after.text.slice(0, cut)),
       pending: [
-        withText(event, text.slice(budget)),
+        { ...event, text: after.text.slice(cut), verbatim: true },
         ...events.slice(index + 1),
       ],
     };
   }
 
-  return { applied, pending: [] };
+  return { session: current, pending: [] };
 }

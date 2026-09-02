@@ -7,9 +7,13 @@ export type HarnessEvent =
   | { type: "session.error"; message: string }
   | { type: "session.providerBound"; providerSessionId: string }
   | { type: "status"; text: string }
-  | { type: "message.delta"; text: string }
+  /**
+   * `verbatim` marks the tail of a delta the paced reveal cut: the join
+   * against the block already happened, so it appends as-is.
+   */
+  | { type: "message.delta"; text: string; verbatim?: boolean }
   | { type: "message.completed" }
-  | { type: "reasoning.delta"; text: string }
+  | { type: "reasoning.delta"; text: string; verbatim?: boolean }
   | { type: "reasoning.completed" }
   | {
       type: "tool.started";

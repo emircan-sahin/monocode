@@ -619,7 +619,10 @@ export default function App({
     cancelScheduledFlush(harnessFlush.current);
     harnessFlush.current = null;
     const batches = harnessQueued.current;
-    if (batches.size === 0) return;
+    if (batches.size === 0) {
+      lastDripAt.current = 0;
+      return;
+    }
     const held = new Map<string, HarnessEvent[]>();
     harnessQueued.current = held;
     const now = performance.now();
@@ -632,13 +635,14 @@ export default function App({
       const events = batches.get(session.id);
       if (!events) return session;
       if (drainAll) return events.reduce(applyHarnessEvent, session);
-      const { applied, pending } = dripHarnessEvents(
+      const { session: next, pending } = dripHarnessEvents(
+        session,
         events,
         streamPaceRef.current,
         elapsed,
       );
       if (pending.length) held.set(session.id, pending);
-      return applied.reduce(applyHarnessEvent, session);
+      return next;
     });
     if (next.some((session, index) => session !== prev[index])) {
       sessionsRef.current = next;
@@ -757,9 +761,8 @@ export default function App({
       window.removeEventListener("pagehide", reap);
       window.removeEventListener("beforeunload", reap);
       stopBridge();
+      // Draining everything leaves nothing to reschedule, so no cancel needed.
       applyQueuedRef.current(true);
-      cancelScheduledFlush(harnessFlush.current);
-      harnessFlush.current = null;
     };
   }, [resumed]);
 
