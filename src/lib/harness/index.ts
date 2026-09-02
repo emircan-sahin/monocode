@@ -1,6 +1,7 @@
 export { startHarnessBridge, killAllChildren } from "./child";
 export { applyHarnessEvent, appendUser, appendSteerUser, stopStreaming } from "./apply";
 export {
+  DRIP_FRAME_MS,
   dripHarnessEvents,
   isStreamPace,
   STREAM_PACE_DEFAULT,

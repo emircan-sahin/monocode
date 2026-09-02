@@ -123,6 +123,7 @@ import {
   startHarnessBridge,
   stopStreaming,
   pickTextHarness,
+  DRIP_FRAME_MS,
   STREAM_PACE_DEFAULT,
   type ApprovalDecision,
   type HarnessEvent,
@@ -589,6 +590,9 @@ export default function App({
   const harnessQueued = useRef(new Map<string, HarnessEvent[]>());
   const harnessFlush = useRef<ScheduledFlush | null>(null);
   const applyQueuedRef = useRef<(drainAll: boolean) => void>(() => undefined);
+  // The reveal is billed against wall clock, not frames, so a transcript heavy
+  // enough to drop frames does not also slow the text down.
+  const lastDripAt = useRef(0);
   // Turn end waits on these so a paced reveal finishes writing before the
   // block is sealed, instead of snapping its last few characters in.
   const queueWaiters = useRef(new Map<string, Array<() => void>>());
@@ -618,6 +622,11 @@ export default function App({
     if (batches.size === 0) return;
     const held = new Map<string, HarnessEvent[]>();
     harnessQueued.current = held;
+    const now = performance.now();
+    const elapsed = lastDripAt.current
+      ? now - lastDripAt.current
+      : DRIP_FRAME_MS;
+    lastDripAt.current = now;
     const prev = sessionsRef.current;
     const next = prev.map((session) => {
       const events = batches.get(session.id);
@@ -626,6 +635,7 @@ export default function App({
       const { applied, pending } = dripHarnessEvents(
         events,
         streamPaceRef.current,
+        elapsed,
       );
       if (pending.length) held.set(session.id, pending);
       return applied.reduce(applyHarnessEvent, session);
@@ -639,6 +649,8 @@ export default function App({
       harnessFlush.current = scheduleHarnessFlush(() =>
         applyQueuedRef.current(false),
       );
+    } else if (!held.size) {
+      lastDripAt.current = 0;
     }
     for (const sessionId of [...queueWaiters.current.keys()]) {
       if (!held.has(sessionId)) releaseQueueWaiters(queueWaiters, sessionId);
