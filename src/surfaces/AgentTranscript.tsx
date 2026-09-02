@@ -14,8 +14,10 @@ import {
   X,
 } from "../chrome/icons";
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -32,6 +34,7 @@ import { NoteMiniCard } from "../chrome/NoteMiniCard";
 import { TerminalSpinner } from "../chrome/TerminalSpinner";
 import type { ApprovalDecision } from "../lib/harness";
 import {
+  isAgentTool,
   isEditTool,
   isReadTool,
   isSearchTool,
@@ -67,6 +70,7 @@ import {
   hasRunningSubagent,
   isIncompleteTool,
   isThinkingBlock,
+  isToolBlock,
   lastActivityIndex,
   isProseBlock,
   needsApproval,
@@ -84,6 +88,30 @@ const NEAR_BOTTOM_PX = 16;
 const INITIAL_TURNS = 20;
 const TURN_PAGE_SIZE = 20;
 
+/**
+ * An Agent tool row is rendered five levels below the transcript root, through
+ * components that already take a dozen props each. Context keeps the click
+ * target out of every signature in between.
+ */
+type OpenAgent = {
+  open: (callId: string) => void;
+  /** Runs the panel can actually show, by the tool call that spawned them. */
+  ids: ReadonlySet<string>;
+};
+
+const OpenAgentContext = createContext<OpenAgent | undefined>(undefined);
+
+/** The panel opener for this block, when the block is a subagent we can show. */
+function useOpenAgent(block: Block): (() => void) | undefined {
+  const openAgent = useContext(OpenAgentContext);
+  const callId = block.tool?.callId;
+  if (!openAgent || !callId || !openAgent.ids.has(callId)) return undefined;
+  if (!isAgentTool(block.tool?.kind, block.text || block.tool?.title)) {
+    return undefined;
+  }
+  return () => openAgent.open(callId);
+}
+
 type Props = {
   blocks: Block[];
   busy?: boolean;
@@ -100,6 +128,10 @@ type Props = {
   onHandoff?: (harness: HarnessId, turn: Block[], model: string) => void;
   onJumpToBottomChange?: (show: boolean) => void;
   onJumpToBottomReady?: (jump: () => void) => void;
+  /** Opens the subagents panel on the run a given Agent tool call spawned. */
+  onOpenAgent?: (callId: string) => void;
+  /** Tool calls that have a run behind them; rows without one get no Open. */
+  agentCallIds?: ReadonlySet<string>;
   /** False while another tab is in front. Hidden tabs stay laid out. */
   visible?: boolean;
 };
@@ -120,8 +152,17 @@ export function AgentTranscript({
   onHandoff,
   onJumpToBottomChange,
   onJumpToBottomReady,
+  onOpenAgent,
+  agentCallIds,
   visible = true,
 }: Props) {
+  const openAgent = useMemo<OpenAgent | undefined>(
+    () =>
+      onOpenAgent && agentCallIds
+        ? { open: onOpenAgent, ids: agentCallIds }
+        : undefined,
+    [onOpenAgent, agentCallIds],
+  );
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -291,6 +332,7 @@ export function AgentTranscript({
   };
 
   return (
+    <OpenAgentContext.Provider value={openAgent}>
     <div
       ref={setScroller}
       className="agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5"
@@ -376,6 +418,12 @@ export function AgentTranscript({
                   completedAt={
                     startedAt != null ? startedAt + durationMs : undefined
                   }
+                  subagentCount={countSubagents(turn)}
+                  onOpenSubagents={
+                    openAgent
+                      ? () => openAgent.open(firstKnownAgentCall(turn, openAgent.ids))
+                      : undefined
+                  }
                   copyText={turnCopyText(turn)}
                   onSaveNote={onSaveNote}
                   fromHarness={
@@ -415,6 +463,7 @@ export function AgentTranscript({
         />
       ) : null}
     </div>
+    </OpenAgentContext.Provider>
   );
 }
 
@@ -449,6 +498,8 @@ function TurnDuration({
   waitingLabel,
   subagent = false,
   completedAt,
+  subagentCount = 0,
+  onOpenSubagents,
   copyText: output,
   onSaveNote,
   fromHarness,
@@ -462,6 +513,10 @@ function TurnDuration({
   waitingLabel?: string;
   subagent?: boolean;
   completedAt?: number;
+  /** Subagents this turn spawned, shown once the turn has settled. */
+  subagentCount?: number;
+  /** Opens the subagent panel on this turn's first run, when the panel has one. */
+  onOpenSubagents?: () => void;
   copyText?: string;
   onSaveNote?: (text: string) => void;
   fromHarness?: HarnessId;
@@ -531,8 +586,48 @@ function TurnDuration({
           </span>
         </>
       ) : null}
+
+      {done && subagentCount > 0 ? (
+        <>
+          {dot}
+          {onOpenSubagents ? (
+            <button
+              type="button"
+              title="Show this turn's subagents"
+              onClick={onOpenSubagents}
+              className="flex items-center gap-1 rounded text-content/35 transition-colors hover:text-content/70"
+            >
+              <Bot className="size-3" strokeWidth={1.75} />
+              {subagentCount === 1 ? "1 subagent" : `${subagentCount} subagents`}
+            </button>
+          ) : (
+            <span className="flex items-center gap-1 text-content/35">
+              <Bot className="size-3" strokeWidth={1.75} />
+              {subagentCount === 1 ? "1 subagent" : `${subagentCount} subagents`}
+            </span>
+          )}
+        </>
+      ) : null}
     </div>
   );
+}
+
+/** Top-level subagents a settled turn spawned — its Agent tool rows. */
+function countSubagents(turn: Block[]): number {
+  return turn.filter(
+    (block) =>
+      isToolBlock(block) &&
+      isAgentTool(block.tool?.kind, block.text || block.tool?.title),
+  ).length;
+}
+
+/** The first Agent call in `turn` the panel can show; "" opens it unselected. */
+function firstKnownAgentCall(turn: Block[], ids: ReadonlySet<string>): string {
+  for (const block of turn) {
+    const callId = block.tool?.callId;
+    if (callId && ids.has(callId) && isToolBlock(block)) return callId;
+  }
+  return "";
 }
 
 /** Wall-clock stamp for a finished turn, in the reader's own locale. */
@@ -1297,6 +1392,7 @@ function ActivityToolRow({
   const label = toolCallLabel(block, cwd);
   const state = toolCallState(block);
   const pending = needsApproval(block);
+  const openAgent = useOpenAgent(block);
   const openFile = isEditTool(
     block.tool?.kind,
     block.text || block.tool?.title,
@@ -1320,12 +1416,27 @@ function ActivityToolRow({
           failed={state === "rejected"}
           onOpenFile={openFile}
         />
+        {openAgent ? <OpenAgentButton onOpen={openAgent} /> : null}
         {pending ? null : <ToolCallStatusIcon state={state} />}
       </div>
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}
     </div>
+  );
+}
+
+function OpenAgentButton({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      title="Open this subagent's transcript"
+      aria-label="Open this subagent's transcript"
+      onClick={onOpen}
+      className="shrink-0 rounded px-1 font-sans text-[11px] text-content/45 hover:bg-content/10 hover:text-content"
+    >
+      Open
+    </button>
   );
 }
 
@@ -1436,6 +1547,7 @@ function ToolCall({
   embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const openAgent = useOpenAgent(block);
   const preview = block.tool?.preview;
   const label = toolCallLabel(block, cwd);
   const detail = block.tool?.detail?.trim();
@@ -1511,6 +1623,7 @@ function ToolCall({
             failed={state === "rejected"}
             onOpenFile={onOpenFile}
           />
+          {openAgent ? <OpenAgentButton onOpen={openAgent} /> : null}
         </div>
       )}
       {open && expandable ? (

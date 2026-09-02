@@ -121,12 +121,15 @@ import {
   sendHarnessTurn,
   steerHarnessTurn,
   startHarnessBridge,
+  stopHarnessAgent,
+  harnessAgentRelayPrompt,
   stopStreaming,
   pickTextHarness,
   type ApprovalDecision,
   type HarnessEvent,
   type UserQuestionReply,
 } from "./lib/harness";
+import { isAgentEvent } from "./lib/harness/agentRuns";
 import {
   appendPreparingHandoff,
   buildDeterministicHandoff,
@@ -200,6 +203,7 @@ import {
   sessionDisplayTitle,
   sessionWorkCwd,
   titleFromPrompt,
+  type AgentRun,
   type Attachment,
   type Block,
   type HarnessId,
@@ -3227,7 +3231,13 @@ export default function App({
               : prompt,
             attachments: prepared,
             onEvent: (event) => {
-              if (turnGen.current.get(sessionId) !== gen) return;
+              if (turnGen.current.get(sessionId) !== gen) {
+                // Stop bumps the generation before the harness has answered,
+                // and subagents can outlive the turn. Their lifecycle is not
+                // turn output: drop it and Stop leaves runs "running" forever.
+                if (isAgentEvent(event)) enqueueHarnessEvent(sessionId, event);
+                return;
+              }
               if (
                 wrap &&
                 (event.type === "session.started" ||
@@ -3443,6 +3453,34 @@ export default function App({
       }
     },
     [flushHarnessEvents],
+  );
+
+  const onStopAgent = useCallback(
+    (sessionId: string, agent: AgentRun) => {
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!session) return;
+      // A refusal used to vanish, which is what made Stop look like a no-op.
+      void stopHarnessAgent(session.harness, sessionId, agent).catch((error: unknown) => {
+        enqueueHarnessEvent(sessionId, {
+          type: "status",
+          text: `Could not stop "${agent.title}": ${
+            error instanceof Error ? error.message : "Claude refused."
+          }`,
+        });
+        flushHarnessEvents();
+      });
+    },
+    [enqueueHarnessEvent, flushHarnessEvents],
+  );
+
+  const onMessageAgent = useCallback(
+    (sessionId: string, agent: AgentRun, text: string) => {
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!session) return;
+      const prompt = harnessAgentRelayPrompt(session.harness, agent, text);
+      if (prompt) onSubmit(sessionId, prompt);
+    },
+    [onSubmit],
   );
 
   const onApproval = useCallback(
@@ -4164,6 +4202,8 @@ export default function App({
                       onHandoff={onHandoff}
                       onMovePane={onMovePane}
                       onNewTerminal={onNewTerminalInSession}
+                      onStopAgent={onStopAgent}
+                      onMessageAgent={onMessageAgent}
                       onTerminalMetaChange={onTerminalMetaChange}
                     />
                   </div>

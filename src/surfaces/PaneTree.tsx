@@ -25,6 +25,7 @@ import {
 import type { RecentProject } from "../lib/recents";
 import type { TerminalMetaPatch } from "../lib/terminalTab";
 import type {
+  AgentRun,
   Attachment,
   Block,
   HarnessId,
@@ -97,6 +98,8 @@ type Shared = {
   ) => void;
   onMovePane: (fromId: string, toId: string, edge: PaneEdge) => void;
   onNewTerminal: (sessionId: string) => void;
+  onStopAgent?: (sessionId: string, agent: AgentRun) => void;
+  onMessageAgent?: (sessionId: string, agent: AgentRun, text: string) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
 };
 
@@ -149,6 +152,8 @@ function PaneTreeComponent({
   onHandoff,
   onMovePane,
   onNewTerminal,
+  onStopAgent,
+  onMessageAgent,
   onTerminalMetaChange,
 }: Props) {
   const treeRef = useRef<HTMLDivElement>(null);
@@ -332,6 +337,8 @@ function PaneTreeComponent({
                 onSecondOpinion={onSecondOpinion}
                 onHandoff={onHandoff}
                 onNewTerminal={onNewTerminal}
+                onStopAgent={onStopAgent}
+                onMessageAgent={onMessageAgent}
                 onPaneDragStart={onPaneDragStart}
               />
             ) : null}

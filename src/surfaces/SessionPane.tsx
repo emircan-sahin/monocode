@@ -3,18 +3,21 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "../chrome/Composer";
+import { TerminalSpinner } from "../chrome/TerminalSpinner";
 import { SessionReview } from "../chrome/SessionReview";
 import type { ApprovalDecision, UserQuestionReply } from "../lib/harness";
 import { looksLikeProject, type RecentProject } from "../lib/recents";
 import {
   sessionDisplayTitle,
   sessionWorkCwd,
+  type AgentRun,
   type Attachment,
   type Block,
   type HarnessId,
@@ -22,6 +25,7 @@ import {
   type Session,
 } from "../lib/session";
 import { AgentTranscript } from "./AgentTranscript";
+import { AgentsPanel } from "./AgentsPanel";
 import { EmptySession } from "./EmptySession";
 import { MOD } from "../lib/platform";
 import { acknowledgeQuoteRequest, ADD_TO_CHAT_EVENT, type AddToChatRequest, type QuoteRequest } from "../lib/quoteDraft";
@@ -84,8 +88,44 @@ type Props = {
     model: string,
   ) => void;
   onNewTerminal: (sessionId: string) => void;
+  onStopAgent?: (sessionId: string, agent: AgentRun) => void;
+  onMessageAgent?: (sessionId: string, agent: AgentRun, text: string) => void;
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
 };
+
+/**
+ * Sits on the composer while subagents run and leaves when they are done, so
+ * a count that lingers cannot be misread as "still running". Finished runs
+ * stay reachable through the Open on their transcript row.
+ */
+function SubagentStrip({
+  running,
+  activity,
+  onOpen,
+}: {
+  running: number;
+  activity?: string;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="mx-4 mb-1 flex w-[calc(100%-2rem)] min-w-0 items-center gap-2 rounded-md border border-content/10 bg-content/5 px-2.5 py-1.5 text-left font-sans text-xs text-content/70 hover:bg-content/10 hover:text-content"
+    >
+      <TerminalSpinner />
+      <span className="shrink-0">
+        {running === 1 ? "1 subagent running" : `${running} subagents running`}
+      </span>
+      {activity ? (
+        <span className="min-w-0 flex-1 truncate text-content/45">{activity}</span>
+      ) : (
+        <span className="flex-1" />
+      )}
+      <span className="shrink-0 text-content/50">Open</span>
+    </button>
+  );
+}
 
 export const SessionPane = memo(function SessionPane({
   session,
@@ -115,6 +155,8 @@ export const SessionPane = memo(function SessionPane({
   onSecondOpinion,
   onHandoff,
   onNewTerminal,
+  onStopAgent,
+  onMessageAgent,
   onPaneDragStart,
 }: Props) {
   const title = sessionDisplayTitle(session.title, session.harness);
@@ -136,6 +178,21 @@ export const SessionPane = memo(function SessionPane({
   const quoteRequestId = useRef(0);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [quoteRequest, setQuoteRequest] = useState<QuoteRequest>();
+  const [agentsOpen, setAgentsOpen] = useState(false);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>();
+  const agents = session.agents ?? [];
+  const runningAgents = agents.filter(
+    (agent) => agent.status === "running",
+  ).length;
+  const agentCallIds = useMemo(
+    () => new Set(agents.flatMap((agent) => (agent.callId ? [agent.callId] : []))),
+    [agents],
+  );
+
+  const openAgents = useCallback((agentId?: string) => {
+    if (agentId) setSelectedAgentId(agentId);
+    setAgentsOpen(true);
+  }, []);
   const onJumpToBottomReady = useCallback((jump: () => void) => {
     jumpToBottomRef.current = jump;
   }, []);
@@ -325,7 +382,29 @@ export const SessionPane = memo(function SessionPane({
               }
               onJumpToBottomChange={setShowJumpToBottom}
               onJumpToBottomReady={onJumpToBottomReady}
+              onOpenAgent={agents.length > 0 ? openAgents : undefined}
+              agentCallIds={agentCallIds}
             />
+            {agentsOpen ? (
+              <AgentsPanel
+                agents={agents}
+                cwd={workCwd}
+                live={!!session.busy || runningAgents > 0}
+                selectedId={selectedAgentId}
+                onSelect={setSelectedAgentId}
+                onClose={() => setAgentsOpen(false)}
+                onStop={
+                  onStopAgent
+                    ? (agent) => onStopAgent(session.id, agent)
+                    : undefined
+                }
+                onMessage={
+                  onMessageAgent
+                    ? (agent, text) => onMessageAgent(session.id, agent, text)
+                    : undefined
+                }
+              />
+            ) : null}
             {showJumpToBottom ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center">
                 <button
@@ -344,7 +423,20 @@ export const SessionPane = memo(function SessionPane({
         )}
       </div>
       {dockComposer ? (
-        <div className="mx-auto w-full max-w-4xl shrink-0">{composer}</div>
+        <div className="mx-auto w-full max-w-4xl shrink-0">
+          {runningAgents > 0 && !agentsOpen ? (
+            <SubagentStrip
+              running={runningAgents}
+              activity={
+                agents.find(
+                  (agent) => agent.status === "running" && agent.activity,
+                )?.activity
+              }
+              onOpen={() => openAgents()}
+            />
+          ) : null}
+          {composer}
+        </div>
       ) : null}
     </div>
   );
