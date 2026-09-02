@@ -590,7 +590,7 @@ export default function App({
   const harnessFlush = useRef<ScheduledFlush | null>(null);
   const applyQueuedRef = useRef<(drainAll: boolean) => void>(() => undefined);
   // Turn end waits on these so a paced reveal finishes writing before the
-  // block is sealed; without it the slow pace would snap its tail in.
+  // block is sealed, instead of snapping its last few characters in.
   const queueWaiters = useRef(new Map<string, Array<() => void>>());
   const skipForgetSessionIds = useRef(new Set<string>());
   const importedSessionsApplied = useRef(false);

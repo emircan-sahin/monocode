@@ -13,34 +13,32 @@ import type { HarnessEvent } from "./types";
  * before the cut is applied now, the rest waits for the next frame.
  */
 
-export type StreamPace = "slow" | "balanced" | "smooth";
+/** `off` is no pacing: every delta lands whole, the moment the CLI sends it. */
+export type StreamPace = "off" | "balanced" | "smooth";
 
 /**
- * A pace is one formula — `pending / drainFrames`, floored at `minChars`.
+ * A paced mode is one formula — `pending / drainFrames`, floored at `minChars`.
  *
- * `minChars` is the unhurried speed, the one in effect while the backlog is
- * small. Text arrives at roughly 3 characters a frame, so `balanced` keeps
- * step with the model. `drainFrames` is the ceiling above that floor: it caps
- * how far behind the reveal can fall, which is what lets `slow` stay slow on
- * ordinary output without stranding the tail of a long answer.
+ * `minChars` is the speed while the backlog is small; `drainFrames` caps how
+ * far behind the reveal may fall once it grows. That cap is also why there is
+ * no "slow" mode here: bounding the lag forces the reveal back to the model's
+ * own rate, so a slower pace only ever reads as a constant offset — measured
+ * at 175 characters a second against smooth's 188, which nobody can see.
+ * Genuinely slower means trailing a long answer by half a minute.
  */
 export const STREAM_PACE_PROFILES: Record<
-  StreamPace,
+  Exclude<StreamPace, "off">,
   { drainFrames: number; minChars: number }
 > = {
-  // Deliberately behind the model, at about 120 characters a second — reading
-  // pace. A turn seals only once the queue empties, so this trails the model
-  // instead of snapping the remainder in at the end.
-  slow: { drainFrames: 60, minChars: 2 },
   balanced: { drainFrames: 8, minChars: 3 },
-  // Finest slices: the text grows a character or two at a time.
+  // Finest slices: the text grows a character or two at a time, every frame.
   smooth: { drainFrames: 16, minChars: 1 },
 };
 
 export const STREAM_PACE_DEFAULT: StreamPace = "smooth";
 
 export function isStreamPace(value: unknown): value is StreamPace {
-  return value === "slow" || value === "balanced" || value === "smooth";
+  return value === "off" || value === "balanced" || value === "smooth";
 }
 
 function deltaText(event: HarnessEvent): string | null {
@@ -54,7 +52,10 @@ function withText(event: HarnessEvent, text: string): HarnessEvent {
   return { ...event, text } as HarnessEvent;
 }
 
-function drainBudget(events: HarnessEvent[], pace: StreamPace): number {
+function drainBudget(
+  events: HarnessEvent[],
+  pace: Exclude<StreamPace, "off">,
+): number {
   const { drainFrames, minChars } = STREAM_PACE_PROFILES[pace];
   let pending = 0;
   for (const event of events) pending += deltaText(event)?.length ?? 0;
@@ -70,6 +71,7 @@ export function dripHarnessEvents(
   events: HarnessEvent[],
   pace: StreamPace = STREAM_PACE_DEFAULT,
 ): { applied: HarnessEvent[]; pending: HarnessEvent[] } {
+  if (pace === "off") return { applied: events, pending: [] };
   let budget = drainBudget(events, pace);
   const applied: HarnessEvent[] = [];
 

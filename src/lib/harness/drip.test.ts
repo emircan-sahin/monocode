@@ -95,7 +95,7 @@ describe("dripHarnessEvents", () => {
 });
 
 describe("stream pace", () => {
-  const paces: StreamPace[] = ["slow", "balanced", "smooth"];
+  const paces: StreamPace[] = ["off", "balanced", "smooth"];
 
   it("defaults to the smooth pace", () => {
     const body = "x".repeat(64);
@@ -105,40 +105,47 @@ describe("stream pace", () => {
     expect(STREAM_PACE_DEFAULT).toBe("smooth");
   });
 
-  it("reveals one burst most gradually on slow and most coarsely on balanced", () => {
-    const burst = [delta("x".repeat(80))];
-    const perFrame = paces.map(
-      (pace) =>
-        (dripHarnessEvents(burst, pace).applied[0] as { text: string }).text
-          .length,
-    );
-    const [slow, balanced, smooth] = perFrame;
-    expect(slow).toBeLessThan(smooth);
-    expect(smooth).toBeLessThan(balanced);
+  it("applies a burst whole when pacing is off", () => {
+    const burst = [delta("x".repeat(4000)), delta("y".repeat(4000))];
+    expect(dripHarnessEvents(burst, "off")).toEqual({
+      applied: burst,
+      pending: [],
+    });
   });
 
-  it("drains every pace fully, slow taking the longest", () => {
+  it("slices one burst more finely on smooth than on balanced", () => {
+    const burst = [delta("x".repeat(80))];
+    const chars = (pace: StreamPace) =>
+      (dripHarnessEvents(burst, pace).applied[0] as { text: string }).text
+        .length;
+    expect(chars("smooth")).toBeLessThan(chars("balanced"));
+    expect(chars("off")).toBe(80);
+  });
+
+  it("drains every pace fully, smooth taking the most frames", () => {
     const body = "x".repeat(600);
     const frames = paces.map((pace) => {
       const drained = drain([delta(body)], pace);
       expect(drained.text).toBe(body);
       return drained.frames;
     });
-    const [slow, balanced, smooth] = frames;
-    expect(slow).toBeGreaterThan(smooth);
+    const [off, balanced, smooth] = frames;
+    expect(off).toBe(1);
     expect(smooth).toBeGreaterThan(balanced);
   });
 
-  it("bounds how far the slow pace falls behind a long answer", () => {
-    // 12k characters would be 100 seconds at a fixed 120 chars/sec; the drain
-    // horizon has to speed up instead of stranding the reader.
-    const drained = drain([delta("x".repeat(12000))], "slow");
-    expect(drained.frames).toBeLessThan(700);
+  it("keeps a long answer from stranding on the paced modes", () => {
+    for (const pace of ["balanced", "smooth"] as StreamPace[]) {
+      const drained = drain([delta("x".repeat(12000))], pace);
+      expect(drained.text.length).toBe(12000);
+      expect(drained.frames).toBeLessThan(200);
+    }
   });
 
   it("recognises stored pace values and rejects anything else", () => {
     for (const pace of paces) expect(isStreamPace(pace)).toBe(true);
-    expect(isStreamPace("fast")).toBe(false);
+    // "slow" was offered briefly; a stored one falls back to the default.
+    expect(isStreamPace("slow")).toBe(false);
     expect(isStreamPace(null)).toBe(false);
   });
 });

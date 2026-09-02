@@ -4,7 +4,6 @@ export {
   dripHarnessEvents,
   isStreamPace,
   STREAM_PACE_DEFAULT,
-  STREAM_PACE_PROFILES,
 } from "./drip";
 export type { StreamPace } from "./drip";
 export {

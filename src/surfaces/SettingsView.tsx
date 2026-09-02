@@ -356,13 +356,13 @@ function GeneralPage({
       </Row>
       <Row
         label="Reply pace"
-        description="The agent CLI hands us a paragraph at a time, so replies used to land in jumps. Smooth spreads each burst across frames as it arrives. Balanced does the same in coarser steps, for a little less work per second. Slow writes at a steady reading pace and trails the agent by about a second, finishing shortly after it does."
+        description="The agent CLI hands us a paragraph at a time, so a reply lands in jumps of five or ten lines. Smooth spreads each burst across frames as it arrives, painting every frame. Balanced does the same in coarser steps for about a third less work. Off takes the text exactly as the CLI sends it, which is where the jumps came from — keep it for a machine that needs the frames back."
       >
         <Segmented
           label="Reply pace"
           value={streamPace}
           options={[
-            { value: "slow", label: "Slow" },
+            { value: "off", label: "Off" },
             { value: "balanced", label: "Balanced" },
             { value: "smooth", label: "Smooth" },
           ]}
