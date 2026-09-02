@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Claude Code subagents get their own panel. A strip above the composer shows how many are running and what the first one is doing, and opens a right-hand drawer that lists every run as a tree (nested spawns under their parent) with activity, tokens and elapsed time. Selecting a run shows its brief and its own transcript — text, thinking and tool calls — plus a reply box that relays a message through the main agent. Stop one run or Stop all; the button reads "Stopping…" until Claude confirms, and a refusal is written to the transcript instead of vanishing. The turn footer counts the subagents each turn spawned and opens the panel on click. Claude only; other harnesses are unchanged. Subagent transcripts are kept for the session, not persisted.
+
 - Settings → General → Diff view: Editor or Unified. Unified stacks every working-tree change in one **Changes** tab — GitHub-style review, editor syntax colours, sticky file headers and line numbers, and a single horizontal scroll that stops at the end of the line. Editor keeps the previous per-file working-tree tabs.
+
+### Fixed
+
+- Claude subagents no longer appear as several transcript rows. Progress and background-task updates named the agent's current activity ("Running find …"), and each one was mistaken for a new agent.
 
 ## [0.1.29] - 2026-09-02
 
