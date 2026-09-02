@@ -1,4 +1,4 @@
-import type { HarnessId } from "../session";
+import type { AgentRun, HarnessId } from "../session";
 import type { PrContent } from "../gitText";
 import { hasLiveCatalog } from "../models";
 import type { UserQuestionReply } from "../userQuestion";
@@ -33,6 +33,17 @@ export type HarnessAdapter = {
     requestId: number,
     reply: UserQuestionReply,
   ): void;
+  /**
+   * Stop one subagent without ending the turn. Absent when the harness has
+   * no per-agent handle; the agents panel then offers no Stop.
+   */
+  stopAgent?(sessionId: string, agent: AgentRun): Promise<void>;
+  /**
+   * How a message from the agents panel reaches a subagent. None of the
+   * harnesses expose a direct channel, so this phrases a relay for the main
+   * agent in the harness's own vocabulary (Claude: the SendMessage tool).
+   */
+  agentRelayPrompt?(agent: AgentRun, text: string): string;
   /** Kill the child but keep resume state for later rebind. */
   stopSession(sessionId: string): Promise<void>;
   /** Drop resume state and kill the child (delete, harness switch, idle detach). */
@@ -154,6 +165,27 @@ export async function cancelHarnessTurn(
   cancelIdlePark(sessionId);
   await adapter.cancelTurn(sessionId);
   scheduleIdlePark(harness, sessionId);
+}
+
+export async function stopHarnessAgent(
+  harness: HarnessId,
+  sessionId: string,
+  agent: AgentRun,
+): Promise<void> {
+  const adapter = getHarness(harness);
+  if (!adapter?.stopAgent) {
+    throw new Error(`${harness} cannot stop a single subagent.`);
+  }
+  await adapter.stopAgent(sessionId, agent);
+}
+
+/** The prompt that relays `text` to `agent`, or null when the harness has no way. */
+export function harnessAgentRelayPrompt(
+  harness: HarnessId,
+  agent: AgentRun,
+  text: string,
+): string | null {
+  return getHarness(harness)?.agentRelayPrompt?.(agent, text) ?? null;
 }
 
 export function respondHarnessApproval(

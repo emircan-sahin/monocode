@@ -5,12 +5,15 @@ import {
   askUserQuestionAllowInput,
   buildClaudeSpawnArgs,
   buildClaudeUserMessage,
+  buildInitializeRequest,
+  buildStopTaskRequest,
   contextFromResult,
   contextUsedFromAssistant,
   extractExitPlanModePlan,
   isClaudeInitMessage,
   isSubagentMessage,
   isTodoTool,
+  sendMessageAddress,
   listModelsFromControlResponse,
   normalizeClaudeCliEffort,
   parseBackgroundAgentTasks,
@@ -707,5 +710,67 @@ describe("subagent messages", () => {
       toolUseId: "toolu_agent",
       subagentType: "explore",
     });
+  });
+
+  it("reads task lifecycle detail the agents panel needs", () => {
+    expect(
+      parseTaskStarted({
+        type: "system",
+        subtype: "task_started",
+        task_id: "t1",
+        tool_use_id: "toolu_agent",
+        description: "Explore",
+        task_type: "local_agent",
+        subagent_type: "explore",
+        spawn_depth: 2,
+      }),
+    ).toMatchObject({ subagentType: "explore", spawnDepth: 2 });
+
+    expect(
+      parseTaskProgress({
+        type: "system",
+        subtype: "task_progress",
+        task_id: "t1",
+        description: "Explore",
+        usage: { total_tokens: 1234, tool_uses: 3, duration_ms: 900 },
+      })?.usage,
+    ).toEqual({ totalTokens: 1234, toolUses: 3, durationMs: 900 });
+
+    // skip_transcript marks the CLI's own housekeeping tasks; they are not
+    // the user's subagents even when the ambient flag is absent.
+    expect(
+      parseTaskStarted({
+        type: "system",
+        subtype: "task_started",
+        task_id: "t2",
+        description: "watcher",
+        task_type: "local_agent",
+        skip_transcript: true,
+      })?.ambient,
+    ).toBe(true);
+  });
+
+  it("declares the subagent capabilities the panel depends on", () => {
+    expect(buildInitializeRequest()).toEqual({
+      subtype: "initialize",
+      forwardSubagentText: true,
+      agentProgressSummaries: true,
+      perTaskStopAffordance: true,
+    });
+    expect(buildStopTaskRequest("t1")).toEqual({
+      subtype: "stop_task",
+      task_id: "t1",
+    });
+  });
+
+  it("picks the SendMessage address out of an Agent tool result", () => {
+    expect(
+      sendMessageAddress(
+        "agentId: abc123 (use SendMessage with to: 'abc123', summary: '<recap>')",
+      ),
+    ).toBe("abc123");
+    expect(sendMessageAddress("Subagent completed but returned no output.")).toBe(
+      undefined,
+    );
   });
 });

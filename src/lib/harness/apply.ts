@@ -1,5 +1,6 @@
 import type { Attachment, Block, Session, ToolPreview } from "../session";
 import { mergeContextUsage } from "../contextUsage";
+import { applyAgentEvent, isAgentEvent } from "./agentRuns";
 import { displayPath } from "../paths";
 import {
   composeToolTitle,
@@ -15,6 +16,7 @@ export function applyHarnessEvent(
   session: Session,
   event: HarnessEvent,
 ): Session {
+  if (isAgentEvent(event)) return applyAgentEvent(session, event);
   switch (event.type) {
     case "message.delta":
       return patchStreaming(session, "assistant", event.text, true);

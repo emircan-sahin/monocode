@@ -1,4 +1,9 @@
-import type { Attachment, RuntimeMode, ToolPreview } from "../session";
+import type {
+  AgentRunStatus,
+  Attachment,
+  RuntimeMode,
+  ToolPreview,
+} from "../session";
 import type { UserQuestion } from "../userQuestion";
 
 export type HarnessEvent =
@@ -56,7 +61,48 @@ export type HarnessEvent =
     }
   | { type: "plan"; text: string }
   /** Context-window level after the harness's latest request. */
-  | { type: "context"; used?: number; window?: number };
+  | { type: "context"; used?: number; window?: number }
+  | {
+      type: "agent.started";
+      agentId: string;
+      title: string;
+      callId?: string;
+      taskId?: string;
+      agentType?: string;
+      depth?: number;
+      prompt?: string;
+      parentId?: string;
+    }
+  | {
+      type: "agent.updated";
+      agentId: string;
+      title?: string;
+      status?: AgentRunStatus;
+      activity?: string;
+      summary?: string;
+      tokens?: number;
+      toolUses?: number;
+      address?: string;
+      /** A stop was requested and the harness has not answered yet. */
+      stopping?: boolean;
+    }
+  /** A body or thinking delta the subagent wrote. */
+  | {
+      type: "agent.output";
+      agentId: string;
+      kind: "assistant" | "reasoning";
+      text: string;
+    }
+  | {
+      type: "agent.tool";
+      agentId: string;
+      callId: string;
+      title: string;
+      kind?: string;
+      status?: string;
+      detail?: string;
+      preview?: ToolPreview;
+    };
 
 export type ApprovalDecision = "allow" | "deny";
 

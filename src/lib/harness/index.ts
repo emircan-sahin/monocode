@@ -126,6 +126,8 @@ export {
   steerHarnessTurn,
   canSteerHarness,
   cancelHarnessTurn,
+  stopHarnessAgent,
+  harnessAgentRelayPrompt,
   respondHarnessApproval,
   respondHarnessQuestion,
   stopHarnessSession,

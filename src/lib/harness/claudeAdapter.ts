@@ -6,8 +6,11 @@ import {
   respondClaudeQuestion,
   sendClaudeTurn,
   steerClaudeTurn,
+  stopClaudeAgent,
   stopClaudeSession,
 } from "./claude";
+import { stoppableId } from "./agentRuns";
+import { buildAgentRelayPrompt } from "../agentRelay";
 import { refreshClaudeCatalog } from "./claudeCatalog";
 import {
   generateClaudeBranchName,
@@ -24,6 +27,12 @@ export const claudeAdapter: HarnessAdapter = {
   sendTurn: sendClaudeTurn,
   steerTurn: steerClaudeTurn,
   cancelTurn: cancelClaudeTurn,
+  stopAgent: async (sessionId, agent) => {
+    const target = stoppableId(agent);
+    if (!target) throw new Error("Claude never reported an id for it.");
+    await stopClaudeAgent(sessionId, target);
+  },
+  agentRelayPrompt: buildAgentRelayPrompt,
   respondApproval: respondClaudeApproval,
   respondQuestion: respondClaudeQuestion,
   stopSession: stopClaudeSession,

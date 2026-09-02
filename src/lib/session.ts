@@ -121,6 +121,44 @@ export type Block = {
   noteCard?: NoteCardMeta;
 };
 
+export type AgentRunStatus = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * One spawned subagent, with the transcript it wrote. Claude only forwards a
+ * subagent's text when the session declares `forwardSubagentText`, so `blocks`
+ * is empty on harnesses that keep their subagents opaque; the header fields
+ * still fill in from task lifecycle events.
+ */
+export type AgentRun = {
+  id: string;
+  /** Harness task id, when the harness names one. Needed to stop it. */
+  taskId?: string;
+  /** The Agent tool call that spawned it — ties the run to its transcript row. */
+  callId?: string;
+  title: string;
+  /** Agent type as the harness named it ("Explore", "general-purpose", …). */
+  agentType?: string;
+  /** The brief this subagent was handed, when the harness reports one. */
+  prompt?: string;
+  status: AgentRunStatus;
+  /** A stop is in flight; cleared when the harness answers either way. */
+  stopping?: boolean;
+  /** 1 for a top-level spawn, N+1 for one spawned inside a depth-N agent. */
+  depth?: number;
+  startedAt: number;
+  endedAt?: number;
+  /** What the subagent is doing right now, as the harness last described it. */
+  activity?: string;
+  /** The run that spawned this one, for nested subagents. */
+  parentId?: string;
+  summary?: string;
+  tokens?: number;
+  toolUses?: number;
+  /** Address for SendMessage, when the harness reported one. */
+  address?: string;
+  blocks: Block[];
+};
+
 export type RuntimeMode =
   "supervised" | "auto-accept-edits" | "auto" | "full-access";
 
@@ -188,6 +226,12 @@ export type Session = {
    * In-memory; request ids do not survive restarts.
    */
   pendingQuestion?: UserQuestionPrompt;
+  /**
+   * Subagents this session spawned, oldest first. In-memory: a subagent's
+   * transcript is only forwarded while its process is live, so it cannot be
+   * rebuilt after a restart the way the main transcript can.
+   */
+  agents?: AgentRun[];
 };
 
 export type PendingHarnessSwitch = {

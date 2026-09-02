@@ -263,6 +263,28 @@ export function buildClaudeSpawnArgs(input: {
   return args;
 }
 
+/**
+ * The CLI keeps subagents opaque unless the session opts in. `initialize` is
+ * the safe place to ask: the matching `--forward-subagent-text` flag hard-errors
+ * on a CLI that predates it, while unknown initialize keys are just dropped.
+ *
+ * `perTaskStopAffordance` is a promise, not a preference — declaring it makes
+ * Stop spare running subagents, which is only right because the agents panel
+ * stops them one by one through `stop_task`.
+ */
+export function buildInitializeRequest(): Record<string, unknown> {
+  return {
+    subtype: "initialize",
+    forwardSubagentText: true,
+    agentProgressSummaries: true,
+    perTaskStopAffordance: true,
+  };
+}
+
+export function buildStopTaskRequest(taskId: string): Record<string, unknown> {
+  return { subtype: "stop_task", task_id: taskId };
+}
+
 export function buildControlRequest(
   requestId: string,
   request: Record<string, unknown>,
@@ -540,8 +562,26 @@ export function inputJsonDeltaFromEvent(
 }
 
 export function isSubagentMessage(rec: Record<string, unknown>): boolean {
+  return subagentParentId(rec) !== undefined;
+}
+
+/** The Agent tool call a forwarded subagent frame belongs to. */
+export function subagentParentId(
+  rec: Record<string, unknown>,
+): string | undefined {
   const parent = rec.parent_tool_use_id;
-  return typeof parent === "string" && parent.length > 0;
+  return typeof parent === "string" && parent.length > 0 ? parent : undefined;
+}
+
+/**
+ * A spawned agent is only reachable by SendMessage once the CLI has told the
+ * model its address, which it does in the Agent tool's own result text. Nothing
+ * else carries it, so the panel's reply box reads it back out from there.
+ */
+export function sendMessageAddress(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const match = /SendMessage\s+with\s+to:\s*'([^']+)'/.exec(text);
+  return match?.[1];
 }
 
 export function isAgentTaskType(taskType: string | undefined): boolean {
@@ -554,6 +594,11 @@ export type ClaudeAgentTaskStarted = {
   toolUseId?: string;
   description: string;
   taskType: string;
+  subagentType?: string;
+  /** 1 for a top-level spawn, N+1 when spawned from inside a depth-N agent. */
+  spawnDepth?: number;
+  /** The brief the subagent was handed. Nothing else in the stream carries it. */
+  prompt?: string;
   backgrounded: boolean;
   ambient: boolean;
 };
@@ -574,8 +619,39 @@ export function parseTaskStarted(
     toolUseId: stringField(rec, "tool_use_id"),
     description: stringField(rec, "description") ?? "Subagent",
     taskType: stringField(rec, "task_type") ?? "",
+    subagentType: stringField(rec, "subagent_type"),
+    spawnDepth: optionalNumber(rec, "spawn_depth"),
+    prompt: stringField(rec, "prompt"),
+    // `skip_transcript` marks the CLI's own housekeeping tasks; they are
+    // ambient for our purposes even when the ambient flag is absent.
     backgrounded: rec.is_backgrounded === true,
-    ambient: rec.ambient === true,
+    ambient: rec.ambient === true || rec.skip_transcript === true,
+  };
+}
+
+function optionalNumber(
+  rec: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = rec[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+export type ClaudeAgentUsage = {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+};
+
+function usageField(rec: Record<string, unknown>): ClaudeAgentUsage | undefined {
+  const usage = asRecord(rec.usage);
+  if (!usage) return undefined;
+  return {
+    totalTokens: optionalNumber(usage, "total_tokens"),
+    toolUses: optionalNumber(usage, "tool_uses"),
+    durationMs: optionalNumber(usage, "duration_ms"),
   };
 }
 
@@ -586,6 +662,7 @@ export type ClaudeAgentTaskProgress = {
   subagentType?: string;
   lastToolName?: string;
   summary?: string;
+  usage?: ClaudeAgentUsage;
 };
 
 export function parseTaskProgress(
@@ -606,6 +683,7 @@ export function parseTaskProgress(
     subagentType: stringField(rec, "subagent_type"),
     lastToolName: stringField(rec, "last_tool_name"),
     summary: stringField(rec, "summary"),
+    usage: usageField(rec),
   };
 }
 
@@ -650,6 +728,7 @@ export type ClaudeAgentTaskNotification = {
   status: string;
   summary: string;
   ambient: boolean;
+  usage?: ClaudeAgentUsage;
 };
 
 export function parseTaskNotification(
@@ -668,7 +747,8 @@ export function parseTaskNotification(
     toolUseId: stringField(rec, "tool_use_id"),
     status: stringField(rec, "status") ?? "completed",
     summary: stringField(rec, "summary") ?? "",
-    ambient: rec.ambient === true,
+    ambient: rec.ambient === true || rec.skip_transcript === true,
+    usage: usageField(rec),
   };
 }
 
@@ -734,6 +814,24 @@ export function isTerminalAgentTaskStatus(status: string | undefined): boolean {
     key === "killed" ||
     key === "stopped"
   );
+}
+
+/**
+ * Subagent thinking never arrives as a stream delta — the CLI forwards a
+ * subagent as whole messages — so the panel has to read it off the block.
+ */
+export function assistantThinkingBlocks(
+  rec: Record<string, unknown>,
+): string[] {
+  const message = asRecord(rec.message);
+  const content = message?.content;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block) => {
+    const row = asRecord(block);
+    if (stringField(row, "type") !== "thinking") return [];
+    const text = typeof row?.thinking === "string" ? row.thinking : "";
+    return text ? [text] : [];
+  });
 }
 
 export function assistantTextBlocks(rec: Record<string, unknown>): string[] {
