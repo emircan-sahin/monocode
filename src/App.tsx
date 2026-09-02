@@ -103,7 +103,6 @@ import {
   type TerminalMetaPatch,
 } from "./lib/terminalTab";
 import {
-  applyHarnessEvent,
   appendUser,
   appendSteerUser,
   bindHarnessSession,
@@ -124,9 +123,9 @@ import {
   stopStreaming,
   pickTextHarness,
   DRIP_FRAME_MS,
-  STREAM_PACE_DEFAULT,
   type ApprovalDecision,
   type HarnessEvent,
+  type QueuedHarnessEvent,
   type UserQuestionReply,
 } from "./lib/harness";
 import {
@@ -276,7 +275,6 @@ import {
   saveSettingsSection,
   subscribeLiveAgentsEnabled,
   subscribeNotesEnabled,
-  subscribeStreamPace,
   type SettingsSectionId,
 } from "./lib/settings";
 import {
@@ -322,19 +320,6 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(value)) return false;
   }
   return true;
-}
-
-/** Longest a turn waits for the paced reveal to finish before it seals. */
-const SETTLE_TIMEOUT_MS = 3000;
-
-function releaseQueueWaiters(
-  waiters: { current: Map<string, Array<() => void>> },
-  sessionId: string,
-) {
-  const pending = waiters.current.get(sessionId);
-  if (!pending) return;
-  waiters.current.delete(sessionId);
-  for (const waiter of pending) waiter();
 }
 
 type ScheduledFlush = { kind: "raf" | "timeout"; id: number };
@@ -505,13 +490,6 @@ export default function App({
     loadLiveAgentsEnabled,
     () => true,
   );
-  const streamPace = useSyncExternalStore(
-    subscribeStreamPace,
-    loadStreamPace,
-    () => STREAM_PACE_DEFAULT,
-  );
-  const streamPaceRef = useRef(streamPace);
-  streamPaceRef.current = streamPace;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateNotice, setUpdateNotice] = useState(installedUpdate);
   const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
@@ -587,15 +565,11 @@ export default function App({
   // One queue per session, drained a frame at a time: a burst of deltas costs
   // one React/markdown pass, and a delta far larger than a frame's worth of
   // text is spread across frames instead of landing whole. See `drip`.
-  const harnessQueued = useRef(new Map<string, HarnessEvent[]>());
+  const harnessQueued = useRef(new Map<string, QueuedHarnessEvent[]>());
   const harnessFlush = useRef<ScheduledFlush | null>(null);
-  const applyQueuedRef = useRef<(drainAll: boolean) => void>(() => undefined);
   // The reveal is billed against wall clock, not frames, so a transcript heavy
   // enough to drop frames does not also slow the text down.
   const lastDripAt = useRef(0);
-  // Turn end waits on these so a paced reveal finishes writing before the
-  // block is sealed, instead of snapping its last few characters in.
-  const queueWaiters = useRef(new Map<string, Array<() => void>>());
   const skipForgetSessionIds = useRef(new Set<string>());
   const importedSessionsApplied = useRef(false);
 
@@ -615,88 +589,65 @@ export default function App({
     }
   }, [windowTransfer, resumed]);
 
-  const applyQueuedEvents = useCallback((drainAll: boolean) => {
+  /**
+   * One paced step for every queued session. `drain` lands a session's queue
+   * whole — "all" for quit, or the id of a session about to be sealed or
+   * written to synchronously, so nothing held overtakes or trails that write.
+   */
+  const applyQueuedEvents = useCallback((drain?: "all" | string) => {
     cancelScheduledFlush(harnessFlush.current);
     harnessFlush.current = null;
     const batches = harnessQueued.current;
-    if (batches.size === 0) {
-      lastDripAt.current = 0;
-      return;
-    }
-    const held = new Map<string, HarnessEvent[]>();
+    const held = new Map<string, QueuedHarnessEvent[]>();
     harnessQueued.current = held;
     const now = performance.now();
     const elapsed = lastDripAt.current
       ? now - lastDripAt.current
       : DRIP_FRAME_MS;
-    lastDripAt.current = now;
-    const prev = sessionsRef.current;
-    const next = prev.map((session) => {
-      const events = batches.get(session.id);
-      if (!events) return session;
-      if (drainAll) return events.reduce(applyHarnessEvent, session);
+    // A hidden window paints for nobody; pacing there is pure cost.
+    const whole = drain === "all" || document.hidden;
+    const pace = loadStreamPace();
+    const changed = new Map<string, Session>();
+    for (const session of sessionsRef.current) {
+      const items = batches.get(session.id);
+      if (!items) continue;
       const { session: next, pending } = dripHarnessEvents(
         session,
-        events,
-        streamPaceRef.current,
+        items,
+        whole || drain === session.id ? "off" : pace,
         elapsed,
       );
       if (pending.length) held.set(session.id, pending);
-      return next;
-    });
-    if (next.some((session, index) => session !== prev[index])) {
+      if (next !== session) changed.set(session.id, next);
+    }
+    lastDripAt.current = held.size ? now : 0;
+    if (changed.size) {
+      const next = sessionsRef.current.map((s) => changed.get(s.id) ?? s);
       sessionsRef.current = next;
       syncDockBadge(next);
-      setSessions(next);
+      // Functional, and only the sessions this step touched: a stopStreaming
+      // queued from a promise continuation for another session must survive.
+      setSessions((prev) => prev.map((s) => changed.get(s.id) ?? s));
     }
-    if (held.size && !harnessFlush.current) {
-      harnessFlush.current = scheduleHarnessFlush(() =>
-        applyQueuedRef.current(false),
-      );
-    } else if (!held.size) {
-      lastDripAt.current = 0;
-    }
-    for (const sessionId of [...queueWaiters.current.keys()]) {
-      if (!held.has(sessionId)) releaseQueueWaiters(queueWaiters, sessionId);
+    if (held.size) {
+      harnessFlush.current = scheduleHarnessFlush(() => applyQueuedEvents());
     }
   }, []);
-  applyQueuedRef.current = applyQueuedEvents;
 
   const flushHarnessEvents = useCallback(
-    () => applyQueuedEvents(true),
+    () => applyQueuedEvents("all"),
     [applyQueuedEvents],
   );
-
-  /** Resolves once the session has no text left waiting on the paced reveal. */
-  const settleSessionQueue = useCallback((sessionId: string) => {
-    if (!harnessQueued.current.get(sessionId)?.length) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      const waiters = queueWaiters.current.get(sessionId) ?? [];
-      waiters.push(resolve);
-      queueWaiters.current.set(sessionId, waiters);
-      // A stalled queue must not leave the turn spinning forever.
-      window.setTimeout(() => {
-        const current = queueWaiters.current.get(sessionId);
-        if (current) {
-          const rest = current.filter((waiter) => waiter !== resolve);
-          if (rest.length) queueWaiters.current.set(sessionId, rest);
-          else queueWaiters.current.delete(sessionId);
-        }
-        resolve();
-      }, SETTLE_TIMEOUT_MS);
-    });
-  }, []);
 
   const applyApprovalEvent = useCallback(
     (sessionId: string, event: HarnessEvent) => {
       const queued = harnessQueued.current.get(sessionId) ?? [];
       harnessQueued.current.delete(sessionId);
-      releaseQueueWaiters(queueWaiters, sessionId);
-      const events = [...queued, event];
+      const items = [...queued, event];
       const prev = sessionsRef.current;
       const next = prev.map((session) =>
         session.id === sessionId
-          ? events.reduce(applyHarnessEvent, session)
+          ? dripHarnessEvents(session, items, "off").session
           : session,
       );
       if (!next.some((session, index) => session !== prev[index])) return;
@@ -723,12 +674,10 @@ export default function App({
       if (events) events.push(event);
       else queued.set(sessionId, [event]);
       if (!harnessFlush.current) {
-        harnessFlush.current = scheduleHarnessFlush(() =>
-          applyQueuedRef.current(false),
-        );
+        harnessFlush.current = scheduleHarnessFlush(() => applyQueuedEvents());
       }
     },
-    [applyApprovalEvent],
+    [applyApprovalEvent, applyQueuedEvents],
   );
 
   useEffect(() => {
@@ -739,7 +688,7 @@ export default function App({
       if (isAppQuitting()) return;
       // Text still waiting on the paced reveal is real output; land it before
       // the snapshot goes to disk.
-      applyQueuedRef.current(true);
+      flushHarnessEvents();
       void persistQuitState(
         sessionsRef.current,
         tabsRef.current,
@@ -761,10 +710,9 @@ export default function App({
       window.removeEventListener("pagehide", reap);
       window.removeEventListener("beforeunload", reap);
       stopBridge();
-      // Draining everything leaves nothing to reschedule, so no cancel needed.
-      applyQueuedRef.current(true);
+      flushHarnessEvents();
     };
-  }, [resumed]);
+  }, [resumed, flushHarnessEvents]);
 
   useEffect(() => {
     void probeHarnessAvailability();
@@ -934,7 +882,7 @@ export default function App({
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         if (focused) {
-          flushHarnessEvents();
+          applyQueuedEvents();
           syncDockBadge(sessionsRef.current);
         }
       })
@@ -944,15 +892,15 @@ export default function App({
     return () => {
       unlisten?.();
     };
-  }, [flushHarnessEvents]);
+  }, [applyQueuedEvents]);
 
   useEffect(() => {
     const onVisible = () => {
-      if (!document.hidden) flushHarnessEvents();
+      if (!document.hidden) applyQueuedEvents();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [flushHarnessEvents]);
+  }, [applyQueuedEvents]);
 
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
@@ -3080,11 +3028,13 @@ export default function App({
             type: "status",
             text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
           });
-          flushHarnessEvents();
+          applyQueuedEvents(sessionId);
           return;
         }
         const visible = displayAttachments(attachments);
         const cards = userTurnCards(noteCard);
+        // Land held text first so the steer never splits a reply mid-word.
+        applyQueuedEvents(sessionId);
         setSessions((prev) =>
           prev.map((s) =>
             s.id === sessionId
@@ -3127,7 +3077,7 @@ export default function App({
               type: "session.error",
               message,
             });
-            flushHarnessEvents();
+            applyQueuedEvents(sessionId);
           }
         })();
         return;
@@ -3156,6 +3106,9 @@ export default function App({
       const queuedHandoff =
         live && !pendingSwitch ? pendingHandoff(current) : null;
 
+      // Whatever the old reply still holds lands above the new prompt, not
+      // beneath it a frame later.
+      applyQueuedEvents(sessionId);
       if (pendingSwitch && current.busy) {
         void cancelHarnessTurn(pendingSwitch.from, sessionId);
       }
@@ -3356,9 +3309,7 @@ export default function App({
           });
         } finally {
           if (turnGen.current.get(sessionId) !== gen) return;
-          await settleSessionQueue(sessionId);
-          if (turnGen.current.get(sessionId) !== gen) return;
-          flushHarnessEvents();
+          applyQueuedEvents(sessionId);
           setSessions((prev) =>
             prev.map((s) => (s.id === sessionId ? stopStreaming(s) : s)),
           );
@@ -3374,7 +3325,7 @@ export default function App({
         }
       })();
     },
-    [enqueueHarnessEvent, flushHarnessEvents, settleSessionQueue],
+    [applyQueuedEvents, enqueueHarnessEvent],
   );
 
   const openSessionBeside = useCallback(
@@ -3508,7 +3459,7 @@ export default function App({
     (sessionId: string) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       turnGen.current.set(sessionId, (turnGen.current.get(sessionId) ?? 0) + 1);
-      flushHarnessEvents();
+      applyQueuedEvents(sessionId);
       if (session) {
         for (const id of sessionChildHarnesses(session)) {
           void cancelHarnessTurn(id, sessionId);
@@ -3535,7 +3486,7 @@ export default function App({
         notifyReviewChanged(sessionId);
       }
     },
-    [flushHarnessEvents],
+    [applyQueuedEvents],
   );
 
   const onApproval = useCallback(

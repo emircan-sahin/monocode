@@ -226,9 +226,7 @@ export function subscribeGridArcadeEnabled(onStoreChange: () => void) {
 
 const STREAM_PACE_KEY = "monocode.streamPace";
 
-/** Fired on `window` when the transcript stream pace changes. */
-export const STREAM_PACE_CHANGE_EVENT = "monocode:stream-pace-change";
-
+/** Read per reveal step rather than subscribed: a change applies next frame. */
 export function loadStreamPace(): StreamPace {
   try {
     const raw = localStorage.getItem(STREAM_PACE_KEY);
@@ -244,17 +242,6 @@ export function saveStreamPace(value: StreamPace) {
   } catch {
     // private mode / quota
   }
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(
-    new CustomEvent<StreamPace>(STREAM_PACE_CHANGE_EVENT, { detail: value }),
-  );
-}
-
-export function subscribeStreamPace(onStoreChange: () => void) {
-  if (typeof window === "undefined") return () => {};
-  window.addEventListener(STREAM_PACE_CHANGE_EVENT, onStoreChange);
-  return () =>
-    window.removeEventListener(STREAM_PACE_CHANGE_EVENT, onStoreChange);
 }
 
 const CLAUDE_HOOKS_KEY = "monocode.claudeHooks";

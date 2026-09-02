@@ -1,12 +1,7 @@
 export { startHarnessBridge, killAllChildren } from "./child";
 export { applyHarnessEvent, appendUser, appendSteerUser, stopStreaming } from "./apply";
-export {
-  DRIP_FRAME_MS,
-  dripHarnessEvents,
-  isStreamPace,
-  STREAM_PACE_DEFAULT,
-} from "./drip";
-export type { StreamPace } from "./drip";
+export { DRIP_FRAME_MS, dripHarnessEvents } from "./drip";
+export type { QueuedHarnessEvent, StreamPace } from "./drip";
 export {
   sendCursorTurn,
   cancelCursorTurn,

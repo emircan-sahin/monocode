@@ -17,23 +17,11 @@ export function applyHarnessEvent(
 ): Session {
   switch (event.type) {
     case "message.delta":
-      return patchStreaming(
-        session,
-        "assistant",
-        event.text,
-        true,
-        event.verbatim,
-      );
+      return patchStreaming(session, "assistant", event.text, true);
     case "message.completed":
       return finishRole(session, "assistant");
     case "reasoning.delta":
-      return patchStreaming(
-        session,
-        "reasoning",
-        event.text,
-        true,
-        event.verbatim,
-      );
+      return patchStreaming(session, "reasoning", event.text, true);
     case "reasoning.completed":
       return finishRole(session, "reasoning");
     case "tool.started":
@@ -221,14 +209,11 @@ function patchStreaming(
   role: "assistant" | "reasoning",
   text: string,
   streaming: boolean,
-  verbatim = false,
 ): Session {
   if (!text && role === "reasoning") return session;
   const last = session.blocks[session.blocks.length - 1];
   if (last?.role === role) {
-    const nextText = verbatim
-      ? last.text + text
-      : joinStreamText(last.text, text);
+    const nextText = joinStreamText(last.text, text);
     if (nextText === last.text && last.streaming === streaming) return session;
     const blocks = session.blocks.slice();
     blocks[blocks.length - 1] = {

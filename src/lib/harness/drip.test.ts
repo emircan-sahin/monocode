@@ -5,6 +5,7 @@ import {
   dripHarnessEvents,
   isStreamPace,
   STREAM_PACE_DEFAULT,
+  type QueuedHarnessEvent,
   type StreamPace,
 } from "./drip";
 import type { HarnessEvent } from "./types";
@@ -25,13 +26,13 @@ function tail(current: Session): string {
 }
 
 function drain(
-  events: HarnessEvent[],
+  items: QueuedHarnessEvent[],
   pace: StreamPace = "balanced",
   elapsedMs = DRIP_FRAME_MS,
   start = session(),
 ): { steps: number; text: string; session: Session } {
   let current = start;
-  let pending = events;
+  let pending = items;
   let steps = 0;
   while (pending.length) {
     const step = dripHarnessEvents(current, pending, pace, elapsedMs);
@@ -49,7 +50,7 @@ describe("dripHarnessEvents", () => {
     const first = dripHarnessEvents(session(), [delta(body)], "balanced");
     expect(tail(first.session)).toBe("x".repeat(16));
     expect(first.pending).toEqual([
-      { type: "message.delta", text: "x".repeat(104), verbatim: true },
+      { type: "drip.tail", role: "assistant", text: "x".repeat(104) },
     ]);
     const drained = drain([delta(body)]);
     expect(drained.text).toBe(body);
@@ -84,7 +85,7 @@ describe("dripHarnessEvents", () => {
     expect(tail(step.session)).toBe("y".repeat(9));
     expect(step.session.blocks).toHaveLength(1);
     expect(step.pending).toEqual([
-      { type: "message.delta", text: "y".repeat(55), verbatim: true },
+      { type: "drip.tail", role: "assistant", text: "y".repeat(55) },
       tool,
     ]);
   });
@@ -121,6 +122,26 @@ describe("dripHarnessEvents", () => {
     expect(drain([delta("Hello"), delta("Hello")], "smooth", 1).text).toBe(
       "Hello",
     );
+  });
+
+  it("opens a new block for a tail whose block is gone", () => {
+    const steered = {
+      ...session("the fun"),
+      blocks: [
+        { id: "a", role: "assistant", text: "the fun", streaming: true },
+        { id: "u", role: "user", text: "wait" },
+      ],
+    } as unknown as Session;
+    const step = dripHarnessEvents(
+      steered,
+      [{ type: "drip.tail", role: "assistant", text: "ction" }],
+      "off",
+    );
+    expect(step.session.blocks.map((block) => block.text)).toEqual([
+      "the fun",
+      "wait",
+      "ction",
+    ]);
   });
 });
 
