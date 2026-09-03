@@ -16,6 +16,9 @@ pub const CLICK_EVENT: &str = "monocode:notification-click";
 #[cfg(target_os = "macos")]
 pub use platform::install_delegate;
 
+/// Each platform constructs only the variants it can reach, so the lint is
+/// silenced for the whole enum rather than per target.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Permission {
@@ -25,7 +28,6 @@ pub enum Permission {
     /// Declined at the prompt, or alerts switched off in System Settings.
     Denied,
     /// No notification backend on this platform.
-    #[allow(dead_code)]
     Unsupported,
 }
 
