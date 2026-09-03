@@ -257,6 +257,13 @@ import { syncDockBadge } from "./lib/dockBadge";
 import { liveAgentsFromSessions } from "./lib/liveAgents";
 import { hiddenApprovalNotices } from "./lib/approvalToast";
 import { nextUnseenFinishedSessions } from "./lib/sessionDone";
+import {
+  loadNotificationsEnabled,
+  NOTIFICATION_CLICK_EVENT,
+  notifySession,
+  probeNotificationPermission,
+  setWindowFocused,
+} from "./lib/notifications";
 import { playCue } from "./lib/sounds";
 import {
   deferUnhandledEscape,
@@ -901,6 +908,26 @@ export default function App({
   const approvalSessionIds = approvalSessionIdsRef.current;
 
   const activeSessionId = active?.id;
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+
+  const notifiedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const previous = notifiedApprovalIdsRef.current;
+    notifiedApprovalIdsRef.current = approvalSessionIds;
+    for (const id of approvalSessionIds) {
+      if (previous.has(id)) continue;
+      const session = sessionsRef.current.find((s) => s.id === id);
+      if (session) {
+        notifySession(session, "needsInput", id === activeSessionIdRef.current);
+      }
+    }
+  }, [approvalSessionIds]);
+
+  // Cache the OS decision so a turn ending later can skip a denied banner.
+  useEffect(() => {
+    if (loadNotificationsEnabled()) void probeNotificationPermission();
+  }, []);
   const busyForDoneRef = useRef(busySessionIds);
   const focusedForDoneRef = useRef(activeSessionId);
   const unseenFinishedRef = useRef<Set<string>>(new Set());
@@ -940,6 +967,7 @@ export default function App({
     let unlisten: (() => void) | undefined;
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
+        setWindowFocused(focused);
         if (focused) {
           flushHarnessEvents();
           syncDockBadge(sessionsRef.current);
@@ -3571,7 +3599,15 @@ export default function App({
                 : finalized;
             }),
           );
-          playCue("turnFinished");
+          // Next tick: the flush above has rendered by then, so the banner
+          // quotes the reply's final text rather than the previous batch.
+          window.setTimeout(() => {
+            const finished = sessionsRef.current.find((s) => s.id === sessionId);
+            const visible = sessionId === activeSessionIdRef.current;
+            if (!finished || !notifySession(finished, "finished", visible)) {
+              playCue("turnFinished");
+            }
+          }, 0);
           notifyReviewChanged(sessionId);
           notifyGitChanged();
           nudgeWorkspace(workCwd);
@@ -4353,6 +4389,7 @@ export default function App({
     onNewTerminalTab,
     onToggleProjectTerminal,
     openSettings,
+    onOpenApprovalSession,
   });
   actions.current = {
     onNew,
@@ -4376,6 +4413,7 @@ export default function App({
     onNewTerminalTab,
     onToggleProjectTerminal,
     openSettings,
+    onOpenApprovalSession,
   };
 
   const debounce = useRef({ name: "", at: 0 });
@@ -4552,6 +4590,12 @@ export default function App({
       }),
       listen("open_model_picker", () => {
         window.dispatchEvent(new Event("open_model_picker"));
+      }),
+      // Every window hears the click; only the one holding the session acts.
+      listen<string>(NOTIFICATION_CLICK_EVENT, ({ payload: sessionId }) => {
+        if (!sessionsRef.current.some((s) => s.id === sessionId)) return;
+        void getCurrentWindow().setFocus();
+        actions.current.onOpenApprovalSession(sessionId);
       }),
     ];
     return () => {

@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The composer hides its internal scrollbar, and a disabled attachment button names the active harness that does not support attachments.
 - Pull request CI cancels superseded runs while main-branch and other non-PR runs remain independent. In #57 by @tcmarkfeld.
 - The README uses a higher-resolution application screenshot.
+- Settings: Notifications, off by default. With it on, a system notification appears when a turn finishes or an agent waits on an approval or question in a session that is not on screen, whether MonoCode is in the background or another session is open; clicking it jumps to that session. Turning it on asks macOS for permission, and a blocked state links to System Settings. The Sounds setting decides whether the notification plays a sound, and the in-app cue is skipped when the banner fires.
 
 ### Fixed
 
