@@ -378,21 +378,39 @@ thread_local! {
 /// Since macOS 12, `NSDockTile` badge updates are ignored unless the app has
 /// requested `UNUserNotificationCenter` authorization with the badge option.
 /// Must run on the main thread after launch (`RunEvent::Ready`), not in setup.
+///
+/// Only re-requests once the user has already answered the prompt: the
+/// one-time system dialog is reserved for the Notifications toggle, so a
+/// badge-only request at startup must not consume it. Until then the badge
+/// stays off.
 pub(crate) fn request_badge_authorization() {
-    let Some(mtm) = MainThreadMarker::new() else {
+    if MainThreadMarker::new().is_none() {
         return;
-    };
+    }
 
     use block2::RcBlock;
     use objc2::runtime::Bool;
     use objc2_foundation::NSError;
-    use objc2_user_notifications::{UNAuthorizationOptions, UNUserNotificationCenter};
+    use objc2_user_notifications::{
+        UNAuthorizationOptions, UNAuthorizationStatus, UNNotificationSettings,
+        UNUserNotificationCenter,
+    };
+    use std::ptr::NonNull;
 
     let center = UNUserNotificationCenter::currentNotificationCenter();
-    let options = UNAuthorizationOptions::Badge;
-    let handler = RcBlock::new(|_granted: Bool, _error: *mut NSError| {});
-    center.requestAuthorizationWithOptions_completionHandler(options, &handler);
-    let _ = mtm;
+    let handler = RcBlock::new(|settings: NonNull<UNNotificationSettings>| {
+        let settings = unsafe { settings.as_ref() };
+        if settings.authorizationStatus() == UNAuthorizationStatus::NotDetermined {
+            return;
+        }
+        let done = RcBlock::new(|_granted: Bool, _error: *mut NSError| {});
+        UNUserNotificationCenter::currentNotificationCenter()
+            .requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::Badge,
+                &done,
+            );
+    });
+    center.getNotificationSettingsWithCompletionHandler(&handler);
 }
 
 pub(crate) fn install_dock_menu(app: &AppHandle) {

@@ -346,8 +346,11 @@ mod platform {
         notification
             .appname("MonoCode")
             .summary(&format!("{title}: {subtitle}"))
-            .body(body)
-            .icon("monocode");
+            // The body is agent output; servers render it as markup.
+            .body(&escape_markup(body))
+            .icon("monocode")
+            // Servers only report the click when a "default" action exists.
+            .action("default", "Show");
         if sound {
             notification.sound_name("message-new-instant");
         }
@@ -363,6 +366,33 @@ mod platform {
             });
         });
         Ok(())
+    }
+
+    /// The freedesktop spec parses the body as a subset of HTML.
+    fn escape_markup(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for ch in text.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::escape_markup;
+
+        #[test]
+        fn escapes_markup_in_bodies() {
+            assert_eq!(
+                escape_markup("<b>x</b> & y"),
+                "&lt;b&gt;x&lt;/b&gt; &amp; y"
+            );
+        }
     }
 
     pub(super) fn open_settings(_app: &AppHandle) -> Result<(), String> {

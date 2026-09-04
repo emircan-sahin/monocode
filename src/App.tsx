@@ -919,7 +919,11 @@ export default function App({
       if (previous.has(id)) continue;
       const session = sessionsRef.current.find((s) => s.id === id);
       if (session) {
-        notifySession(session, "needsInput", id === activeSessionIdRef.current);
+        void notifySession(
+          session,
+          "needsInput",
+          id === activeSessionIdRef.current,
+        );
       }
     }
   }, [approvalSessionIds]);
@@ -3604,9 +3608,12 @@ export default function App({
           window.setTimeout(() => {
             const finished = sessionsRef.current.find((s) => s.id === sessionId);
             const visible = sessionId === activeSessionIdRef.current;
-            if (!finished || !notifySession(finished, "finished", visible)) {
-              playCue("turnFinished");
-            }
+            const sent = finished
+              ? notifySession(finished, "finished", visible)
+              : Promise.resolve(false);
+            void sent.then((ok) => {
+              if (!ok) playCue("turnFinished");
+            });
           }, 0);
           notifyReviewChanged(sessionId);
           notifyGitChanged();

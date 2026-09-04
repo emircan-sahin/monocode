@@ -160,14 +160,15 @@ function clip(text: string): string {
 }
 
 /**
- * Sends the banner when policy allows. Returns true when one was dispatched
- * so callers can skip the in-app cue: the OS sound stands in for it.
+ * Sends the banner when policy allows. Resolves true once the OS accepted it
+ * so callers can skip the in-app cue: the OS sound stands in for it. A
+ * rejected dispatch resolves false so the cue still plays.
  */
-export function notifySession(
+export async function notifySession(
   session: Session,
   event: NotificationEvent,
   sessionVisible: boolean,
-): boolean {
+): Promise<boolean> {
   const decision = shouldNotify({
     enabled: loadNotificationsEnabled(),
     permission,
@@ -176,12 +177,16 @@ export function notifySession(
   });
   if (!decision) return false;
   const { title, subtitle, body } = notificationText(session, event);
-  void invoke("show_notification", {
-    sessionId: session.id,
-    title,
-    subtitle,
-    body,
-    sound: loadSoundsEnabled(),
-  }).catch(() => {});
-  return true;
+  try {
+    await invoke("show_notification", {
+      sessionId: session.id,
+      title,
+      subtitle,
+      body,
+      sound: loadSoundsEnabled(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
