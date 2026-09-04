@@ -260,34 +260,6 @@ mod platform {
         }
     );
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use objc2::runtime::AnyProtocol;
-        use objc2::{sel, ClassType};
-
-        #[test]
-        fn identifier_round_trips_the_session() {
-            let id = request_identifier("549ae7ac");
-            assert_eq!(session_from_identifier(&id), Some("549ae7ac"));
-            assert_eq!(session_from_identifier("other"), None);
-        }
-
-        #[test]
-        fn delegate_registers_protocol_methods() {
-            let cls = Delegate::class();
-            let proto =
-                AnyProtocol::get(c"UNUserNotificationCenterDelegate").expect("protocol loaded");
-            assert!(cls.conforms_to(proto));
-            assert!(cls.responds_to(sel!(
-                userNotificationCenter:willPresentNotification:withCompletionHandler:
-            )));
-            assert!(cls.responds_to(sel!(
-                userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:
-            )));
-        }
-    }
-
     thread_local! {
         static DELEGATE: RefCell<Option<Retained<Delegate>>> = const { RefCell::new(None) };
     }
@@ -317,6 +289,34 @@ mod platform {
                 UNNotificationCategoryOptions::empty(),
             );
         center.setNotificationCategories(&NSSet::from_retained_slice(&[category]));
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use objc2::runtime::AnyProtocol;
+        use objc2::{sel, ClassType};
+
+        #[test]
+        fn identifier_round_trips_the_session() {
+            let id = request_identifier("549ae7ac");
+            assert_eq!(session_from_identifier(&id), Some("549ae7ac"));
+            assert_eq!(session_from_identifier("other"), None);
+        }
+
+        #[test]
+        fn delegate_registers_protocol_methods() {
+            let cls = Delegate::class();
+            let proto =
+                AnyProtocol::get(c"UNUserNotificationCenterDelegate").expect("protocol loaded");
+            assert!(cls.conforms_to(proto));
+            assert!(cls.responds_to(sel!(
+                userNotificationCenter:willPresentNotification:withCompletionHandler:
+            )));
+            assert!(cls.responds_to(sel!(
+                userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:
+            )));
+        }
     }
 }
 
@@ -382,6 +382,10 @@ mod platform {
         out
     }
 
+    pub(super) fn open_settings(_app: &AppHandle) -> Result<(), String> {
+        Err("no notification settings page on this platform".into())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::escape_markup;
@@ -393,10 +397,6 @@ mod platform {
                 "&lt;b&gt;x&lt;/b&gt; &amp; y"
             );
         }
-    }
-
-    pub(super) fn open_settings(_app: &AppHandle) -> Result<(), String> {
-        Err("no notification settings page on this platform".into())
     }
 }
 
