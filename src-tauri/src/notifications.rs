@@ -41,8 +41,11 @@ pub async fn request_notification_permission() -> Permission {
     platform::request_permission().await
 }
 
+/// Resolves only once the platform reports the banner as scheduled: the
+/// frontend skips its own turn-finished cue on success, so returning early
+/// would silence a turn that never got a notification.
 #[tauri::command]
-pub fn show_notification(
+pub async fn show_notification(
     app: AppHandle,
     session_id: String,
     title: String,
@@ -50,7 +53,7 @@ pub fn show_notification(
     body: String,
     sound: bool,
 ) -> Result<(), String> {
-    platform::show(&app, &session_id, &title, &subtitle, &body, sound)
+    platform::show(&app, &session_id, &title, &subtitle, &body, sound).await
 }
 
 /// Opens the app's page in the OS notification settings, where the user can
@@ -65,6 +68,7 @@ mod platform {
     use std::cell::RefCell;
     use std::ptr::NonNull;
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use block2::RcBlock;
     use objc2::rc::Retained;
@@ -146,30 +150,46 @@ mod platform {
         rx
     }
 
-    async fn wait<T: Send + 'static>(rx: mpsc::Receiver<T>) -> Option<T> {
-        tauri::async_runtime::spawn_blocking(move || rx.recv().ok())
-            .await
-            .ok()
-            .flatten()
+    /// A dispatch still unanswered by now has already lost to the in-app cue,
+    /// so the caller gives up rather than leaving the turn silent.
+    const DISPATCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// `None` waits indefinitely, which is what the permission prompt needs:
+    /// its handler does not run until the user answers the system dialog.
+    async fn wait<T: Send + 'static>(
+        rx: mpsc::Receiver<T>,
+        timeout: Option<Duration>,
+    ) -> Option<T> {
+        tauri::async_runtime::spawn_blocking(move || match timeout {
+            Some(timeout) => rx.recv_timeout(timeout).ok(),
+            None => rx.recv().ok(),
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub(super) async fn permission() -> Permission {
-        wait(query_permission()).await.unwrap_or(Permission::Denied)
+        wait(query_permission(), None)
+            .await
+            .unwrap_or(Permission::Denied)
     }
 
     pub(super) async fn request_permission() -> Permission {
-        wait(start_request()).await;
+        wait(start_request(), None).await;
         permission().await
     }
 
-    pub(super) fn show(
-        _app: &AppHandle,
+    /// Hands the request to the center and reports what its completion
+    /// handler says. Authorization is settled before this runs, so an
+    /// undetermined status never turns a finished turn into a system prompt.
+    fn start_show(
         session_id: &str,
         title: &str,
         subtitle: &str,
         body: &str,
         sound: bool,
-    ) -> Result<(), String> {
+    ) -> mpsc::Receiver<Result<(), String>> {
         let content = UNMutableNotificationContent::new();
         content.setTitle(&NSString::from_str(title));
         content.setSubtitle(&NSString::from_str(subtitle));
@@ -184,25 +204,41 @@ mod platform {
             &content,
             None,
         );
-        let on_done = RcBlock::new(|error: *mut NSError| {
-            if !error.is_null() {
-                let error = unsafe { &*error };
-                eprintln!("monocode: notification rejected: {error}");
-            }
-        });
-        // Adding while authorization is still undetermined fails with
-        // UNErrorDomain 1, so ask first; the call is a no-op once decided.
-        let on_authorized = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
-            if !granted.as_bool() {
-                eprintln!("monocode: notifications not authorized; skipping banner");
-                return;
-            }
-            UNUserNotificationCenter::currentNotificationCenter()
-                .addNotificationRequest_withCompletionHandler(&request, Some(&on_done));
+        let (tx, rx) = mpsc::channel();
+        let handler = RcBlock::new(move |error: *mut NSError| {
+            let result = match NonNull::new(error) {
+                Some(error) => Err(format!("notification rejected: {}", unsafe {
+                    error.as_ref()
+                })),
+                None => Ok(()),
+            };
+            let _ = tx.send(result);
         });
         UNUserNotificationCenter::currentNotificationCenter()
-            .requestAuthorizationWithOptions_completionHandler(options(), &on_authorized);
-        Ok(())
+            .addNotificationRequest_withCompletionHandler(&request, Some(&handler));
+        rx
+    }
+
+    pub(super) async fn show(
+        _app: &AppHandle,
+        session_id: &str,
+        title: &str,
+        subtitle: &str,
+        body: &str,
+        sound: bool,
+    ) -> Result<(), String> {
+        // Asked here rather than trusted from the frontend, whose cached
+        // permission goes stale when alerts are switched off in System
+        // Settings and whose badge-only case the center accepts silently.
+        if wait(query_permission(), Some(DISPATCH_TIMEOUT)).await != Some(Permission::Granted) {
+            return Err("notifications are not authorized".into());
+        }
+        wait(
+            start_show(session_id, title, subtitle, body, sound),
+            Some(DISPATCH_TIMEOUT),
+        )
+        .await
+        .unwrap_or_else(|| Err("notification dispatch timed out".into()))
     }
 
     pub(super) fn open_settings(app: &AppHandle) -> Result<(), String> {
@@ -305,6 +341,22 @@ mod platform {
         }
 
         #[test]
+        fn wait_reports_what_the_completion_handler_sent() {
+            let (tx, rx) = mpsc::channel();
+            tx.send(Err::<(), String>("rejected".into())).unwrap();
+            let got = tauri::async_runtime::block_on(wait(rx, None));
+            assert_eq!(got, Some(Err("rejected".into())));
+        }
+
+        #[test]
+        fn wait_gives_up_when_the_completion_handler_never_runs() {
+            let (tx, rx) = mpsc::channel::<Result<(), String>>();
+            let got = tauri::async_runtime::block_on(wait(rx, Some(Duration::from_millis(20))));
+            assert_eq!(got, None);
+            drop(tx);
+        }
+
+        #[test]
         fn delegate_registers_protocol_methods() {
             let cls = Delegate::class();
             let proto =
@@ -334,7 +386,7 @@ mod platform {
         Permission::Granted
     }
 
-    pub(super) fn show(
+    pub(super) async fn show(
         app: &AppHandle,
         session_id: &str,
         title: &str,
@@ -414,7 +466,7 @@ mod platform {
         Permission::Unsupported
     }
 
-    pub(super) fn show(
+    pub(super) async fn show(
         _app: &AppHandle,
         _session_id: &str,
         _title: &str,
